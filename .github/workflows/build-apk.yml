@@ -1,0 +1,121 @@
+name: Build FX Arena Esports APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Web Assets
+        run: npm run build
+
+      - name: Create Capacitor Android Project
+        run: |
+          rm -rf android
+          npx cap add android
+          npx cap sync android
+
+      - name: Apply FX Arena Esports Logo & Branding
+        run: |
+          python3 -c "import PIL" 2>/dev/null || (sudo apt-get update && sudo apt-get install -y python3-pil)
+          python3 - << 'EOF'
+          import os, glob
+          from PIL import Image, ImageDraw
+
+          logo_path = "public/assets/aistudio/fx_arena_icon_512_8f7073a7.png"
+          res_dir = "android/app/src/main/res"
+          base_img = Image.open(logo_path).convert("RGBA")
+
+          # Remove adaptive icon XMLs so custom PNG launcher icon is always shown cleanly
+          anydpi_dir = os.path.join(res_dir, "mipmap-anydpi-v26")
+          if os.path.isdir(anydpi_dir):
+              for f in os.listdir(anydpi_dir):
+                  os.remove(os.path.join(anydpi_dir, f))
+
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192,
+          }
+
+          for folder, px in sizes.items():
+              out_dir = os.path.join(res_dir, folder)
+              os.makedirs(out_dir, exist_ok=True)
+              resized = base_img.resize((px, px), Image.LANCZOS)
+              resized.save(os.path.join(out_dir, "ic_launcher.png"), "PNG")
+              resized.save(os.path.join(out_dir, "ic_launcher_foreground.png"), "PNG")
+
+              # Circular cropped version for ic_launcher_round.png
+              mask = Image.new("L", (px, px), 0)
+              draw = ImageDraw.Draw(mask)
+              draw.ellipse((0, 0, px, px), fill=255)
+              round_img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+              round_img.paste(resized, (0, 0), mask)
+              round_img.save(os.path.join(out_dir, "ic_launcher_round.png"), "PNG")
+
+          # Replace Capacitor default splash screens with FX Arena Esports welcome artwork
+          splash_src_path = "public/assets/aistudio/fx-welcome_31ecf10b.png"
+          splash_src = Image.open(splash_src_path).convert("RGBA") if os.path.exists(splash_src_path) else base_img
+          for splash_file in glob.glob(os.path.join(res_dir, "drawable*", "splash.png")):
+              w, h = Image.open(splash_file).size
+              canvas = Image.new("RGBA", (w, h), (5, 5, 8, 255))
+              scale = min(w / splash_src.width, h / splash_src.height)
+              nw, nh = max(1, int(splash_src.width * scale)), max(1, int(splash_src.height * scale))
+              fitted = splash_src.resize((nw, nh), Image.LANCZOS)
+              canvas.paste(fitted, ((w - nw) // 2, (h - nh) // 2), fitted)
+              canvas.save(splash_file, "PNG")
+          print("Applied FX Arena Esports launcher icons and splash screens successfully.")
+          EOF
+
+      - name: Build Android APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare Final APK File
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk FX-Arena-Esports.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FX-Arena-Esports-APK
+          path: FX-Arena-Esports.apk
+
+      - name: Publish Public APK Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: FX Arena Esports v1.0.${{ github.run_number }}
+          body: Official Android APK for FX Arena Esports. Download and install FX-Arena-Esports.apk on your Android phone.
+          files: FX-Arena-Esports.apk
+          make_latest: true

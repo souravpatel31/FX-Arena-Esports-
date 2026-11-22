@@ -1,0 +1,303 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and balance information",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "ign": { "type": "string", "maxLength": 100 },
+        "gameIGNs": { "type": "object" },
+        "wallet": {
+          "type": "object",
+          "properties": {
+            "deposit": { "type": "number" },
+            "winnings": { "type": "number" },
+            "bonus": { "type": "number" }
+          }
+        },
+        "isKycVerified": { "type": "boolean" },
+        "isAdmin": { "type": "boolean" },
+        "isBanned": { "type": "boolean" },
+        "fcmEnabled": { "type": "boolean" },
+        "notificationsEnabled": { "type": "boolean" },
+        "stats": {
+          "type": "object",
+          "properties": {
+            "matchesPlayed": { "type": "number" },
+            "totalWins": { "type": "number" },
+            "totalKills": { "type": "number" },
+            "totalWinnings": { "type": "number" }
+          }
+        },
+        "referredBy": { "type": "string", "maxLength": 100 },
+        "referralClaimed": { "type": "boolean" },
+        "deviceId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["username", "email"]
+    },
+    "AppSettings": {
+      "title": "App Settings",
+      "description": "Global application configuration",
+      "type": "object",
+      "properties": {
+        "referral": {
+          "type": "object",
+          "properties": {
+            "baseUrl": { "type": "string" },
+            "perReferralReward": { "type": "number" },
+            "rewardType": { "type": "string", "enum": ["deposit", "bonus", "both"] },
+            "depositPercentage": { "type": "number" },
+            "bonusPercentage": { "type": "number" },
+            "newUserReward": { "type": "number" }
+          }
+        },
+        "support": {
+          "type": "object",
+          "properties": {
+            "whatsapp": { "type": "string" },
+            "telegram": { "type": "string" },
+            "email": { "type": "string" }
+          }
+        },
+        "paymentQr": {
+          "type": "object",
+          "properties": {
+            "qrImageUrl": { "type": "string", "maxLength": 2500 },
+            "amountQrs": { "type": "object" },
+            "upiId": { "type": "string", "maxLength": 128 },
+            "merchantName": { "type": "string", "maxLength": 100 },
+            "isActive": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial transaction record",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["deposit", "withdraw", "win", "entry", "refund", "bonus", "adjustment"] },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["completed", "pending", "failed", "abandoned"] },
+        "matchId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "paymentMethod": { "type": "string", "maxLength": 64 },
+        "upiId": { "type": "string", "maxLength": 128 },
+        "utrNumber": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "amount", "status", "createdAt"]
+    },
+    "Game": {
+      "title": "Game",
+      "description": "Game category",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "title": { "type": "string", "maxLength": 100 },
+        "image": { "type": "string", "maxLength": 2500 },
+        "players": { "type": "number" }
+      },
+      "required": ["title", "image"]
+    },
+    "Tournament": {
+      "title": "Tournament",
+      "description": "Match or tournament details",
+      "type": "object",
+      "properties": {
+        "gameId": { "type": "string", "maxLength": 64 },
+        "title": { "type": "string", "maxLength": 200 },
+        "image": { "type": "string", "maxLength": 2500 },
+        "entryFee": { "type": "number" },
+        "prizePool": { "type": "number" },
+        "perKill": { "type": "number" },
+        "time": { "type": "string" },
+        "totalSlots": { "type": "number" },
+        "filledSlots": { "type": "number" },
+        "playersCount": { "type": "number" },
+        "players": { "type": "array" },
+        "map": { "type": "string", "maxLength": 100 },
+        "perspective": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["gameId", "title", "entryFee"]
+    },
+    "Registration": {
+      "title": "Registration",
+      "description": "A user's registration for a specific tournament",
+      "type": "object",
+      "properties": {
+        "tournamentId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "ign": { "type": "string", "maxLength": 100 },
+        "slot": { "type": "number" },
+        "slots": { "type": "array" },
+        "teamMembers": { "type": "array" },
+        "totalSlotsBooked": { "type": "number" },
+        "gameId": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "maxLength": 30 },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tournamentId", "userId", "ign"]
+    },
+    "GameRule": {
+      "title": "Game Rule",
+      "description": "Rules for different game types",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "type": { "type": "string", "maxLength": 100 },
+        "rules": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["type", "rules"]
+    },
+    "GameMode": {
+      "title": "Game Mode",
+      "description": "Dynamic game mode configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 100 },
+        "gameId": { "type": "string", "maxLength": 50 },
+        "title": { "type": "string", "maxLength": 100 },
+        "subtitle": { "type": "string", "maxLength": 200 },
+        "image": { "type": "string", "maxLength": 2500 },
+        "category": { "type": "string", "maxLength": 100 },
+        "order": { "type": "number" }
+      },
+      "required": ["id", "gameId", "title", "image"]
+    },
+    "Banner": {
+      "title": "Banner",
+      "description": "Promotional home banner",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 150 },
+        "imageUrl": { "type": "string", "maxLength": 2500 },
+        "actionUrl": { "type": "string", "maxLength": 500 },
+        "order": { "type": "number" },
+        "isActive": { "type": "boolean" }
+      }
+    },
+    "MatchResult": {
+      "title": "Match Result",
+      "description": "Declared winners and scores for a match",
+      "type": "object",
+      "properties": {
+        "matchId": { "type": "string", "maxLength": 128 },
+        "winners": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app and push notification broadcast",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 1000 },
+        "audience": { "type": "string", "enum": ["all", "match", "user"] },
+        "targetMatchId": { "type": "string", "maxLength": 128 },
+        "targetUserId": { "type": "string", "maxLength": 128 },
+        "readBy": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "PaymentGateway": {
+      "title": "Payment Gateway",
+      "description": "Configuration for a single payment gateway",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "maxLength": 100 },
+        "apiKey": { "type": "string", "maxLength": 256 },
+        "secretKey": { "type": "string", "maxLength": 256 },
+        "merchantId": { "type": "string", "maxLength": 128 },
+        "webhookSecret": { "type": "string", "maxLength": 256 },
+        "upiId": { "type": "string", "maxLength": 128 },
+        "isActive": { "type": "boolean" },
+        "isProduction": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "isActive"]
+    },
+    "AdminRole": {
+      "title": "Admin Role",
+      "description": "Trusted admin role mapping",
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": "AdminRole",
+      "description": "Trusted administrator identities"
+    },
+    "/paymentSettings/{gatewayId}": {
+      "schema": "PaymentGateway",
+      "description": "Configurations for multiple payment gateways"
+    },
+    "/gameModes/{modeId}": {
+      "schema": "GameMode",
+      "description": "Dynamic game mode configurations"
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and wallets"
+    },
+    "/games/{gameId}": {
+      "schema": "Game",
+      "description": "Game categories"
+    },
+    "/matches/{matchId}": {
+      "schema": "Tournament",
+      "description": "Active and past matches"
+    },
+    "/tournaments/{tournamentId}": {
+      "schema": "Tournament",
+      "description": "Legacy tournament entries"
+    },
+    "/registrations/{registrationId}": {
+      "schema": "Registration",
+      "description": "Match entries"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Financial transaction history"
+    },
+    "/meta/counters": {
+      "schema": "object",
+      "description": "System-wide counters"
+    },
+    "/gameRules/{ruleId}": {
+      "schema": "GameRule",
+      "description": "Rules for various match types"
+    },
+    "/appSettings/{settingId}": {
+      "schema": "AppSettings",
+      "description": "Global application configuration"
+    },
+    "/banners/{bannerId}": {
+      "schema": "Banner",
+      "description": "Home carousel promotional banners"
+    },
+    "/matchResults/{matchId}": {
+      "schema": "MatchResult",
+      "description": "Declared match results and winners"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Broadcast and targeted notifications"
+    }
+  }
+}

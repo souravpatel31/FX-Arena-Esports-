@@ -33,9 +33,9 @@ import GlobalNotificationListener from './components/GlobalNotificationListener'
 
 const DEFAULT_USER_DATA = {
   wallet: {
-    deposit: 500, // Increased default for easier testing
+    deposit: 0,
     winnings: 0,
-    bonus: 200,
+    bonus: 0,
   },
   isKycVerified: false,
   isAdmin: false,
@@ -108,12 +108,29 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [joinedMatchIds, setJoinedMatchIds] = useState<string[]>([]);
-  const [showPostLoginSplash, setShowPostLoginSplash] = useState(false);
+  const [showWelcomeSplash, setShowWelcomeSplash] = useState(true);
+  const [splashRunId, setSplashRunId] = useState(1);
   const splashTimerRef = React.useRef<number | null>(null);
+
+  const triggerWelcomeSplash = () => {
+    setSplashRunId((prev) => prev + 1);
+    setShowWelcomeSplash(true);
+    if (splashTimerRef.current) {
+      window.clearTimeout(splashTimerRef.current);
+    }
+    splashTimerRef.current = window.setTimeout(() => {
+      setShowWelcomeSplash(false);
+      splashTimerRef.current = null;
+    }, 3000);
+  };
 
   useEffect(() => {
     const preloadImg = new Image();
     preloadImg.src = '/assets/aistudio/fx-welcome_31ecf10b.png';
+    splashTimerRef.current = window.setTimeout(() => {
+      setShowWelcomeSplash(false);
+      splashTimerRef.current = null;
+    }, 3000);
     return () => {
       if (splashTimerRef.current) {
         window.clearTimeout(splashTimerRef.current);
@@ -331,11 +348,11 @@ export default function App() {
                            normalizedEmail === 'qupagaming@gmail.com' ||
                            firebaseUser.uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1';
             const newUser: User = {
-              username: firebaseUser.displayName || `Gamer_${firebaseUser.uid.slice(0, 5)}`,
-              email: firebaseUser.email || '',
-              phone: firebaseUser.phoneNumber || '',
+              username: (firebaseUser.displayName || `Gamer_${firebaseUser.uid.slice(0, 5)}`).slice(0, 100),
+              email: (firebaseUser.email || '').slice(0, 200),
+              phone: (firebaseUser.phoneNumber || '').slice(0, 30),
               ...DEFAULT_USER_DATA,
-              isAdmin: isAdmin
+              isAdmin: Boolean(isAdmin && firebaseUser.emailVerified)
             };
             await setDoc(userDocRef, {
               ...newUser,
@@ -385,19 +402,8 @@ export default function App() {
     };
   }, []);
 
-  const triggerPostLoginSplash = () => {
-    setShowPostLoginSplash(true);
-    if (splashTimerRef.current) {
-      window.clearTimeout(splashTimerRef.current);
-    }
-    splashTimerRef.current = window.setTimeout(() => {
-      setShowPostLoginSplash(false);
-      splashTimerRef.current = null;
-    }, 3000);
-  };
-
   const handleLogin = () => {
-    triggerPostLoginSplash();
+    triggerWelcomeSplash();
     console.log("Redirecting to home...");
     navigate('/home');
   };
@@ -458,70 +464,102 @@ export default function App() {
       const referrerDoc = referrerSnap.docs[0];
       const referrerId = referrerDoc.id;
 
-      // Reward Referrer
-      const rawRefReward = refSettings.perReferralReward ?? 3;
-      const refReward = rawRefReward === 50 ? 3 : rawRefReward;
-      if (refReward > 0) {
-        const referrerUpdate: any = {};
-        if (refSettings.rewardType === 'deposit') {
-          referrerUpdate['wallet.deposit'] = increment(refReward);
-        } else if (refSettings.rewardType === 'bonus') {
-          referrerUpdate['wallet.bonus'] = increment(refReward);
-        } else if (refSettings.rewardType === 'both') {
-          const depPercentage = refSettings.depositPercentage || 50;
-          const depAmount = (refReward * depPercentage) / 100;
-          const bonusAmount = refReward - depAmount;
-          referrerUpdate['wallet.deposit'] = increment(depAmount);
-          referrerUpdate['wallet.bonus'] = increment(bonusAmount);
-        }
-        
-        const batch = writeBatch(db);
-        batch.update(doc(db, 'users', referrerId), referrerUpdate);
-        
-        // Referrer Transaction
-        batch.set(doc(collection(db, 'transactions')), {
-          userId: referrerId,
+      // Reward New User (always allowed by Firestore owner rules up to +10 bonus)
+      const rawNewUserReward = refSettings.newUserReward ?? 2;
+      const newUserReward = Math.min(10, rawNewUserReward === 10 ? 2 : rawNewUserReward);
+      const userBatch = writeBatch(db);
+      if (newUserReward > 0) {
+        userBatch.update(doc(db, 'users', uid), {
+          'wallet.bonus': increment(newUserReward),
+          referralClaimed: true
+        });
+        userBatch.set(doc(collection(db, 'transactions')), {
+          userId: uid,
           type: 'bonus',
-          amount: refReward,
+          amount: newUserReward,
           status: 'completed',
-          title: `Referral Reward: ${currentUser.username}`,
+          title: `Referral Bonus (from ${currentUser.referredBy})`.slice(0, 200),
           createdAt: serverTimestamp()
         });
+      } else {
+        userBatch.update(doc(db, 'users', uid), { referralClaimed: true });
+      }
+      await userBatch.commit();
 
-        // 2. Reward New User
-        const rawNewUserReward = refSettings.newUserReward ?? 2;
-        const newUserReward = rawNewUserReward === 10 ? 2 : rawNewUserReward;
-        if (newUserReward > 0) {
-          batch.update(doc(db, 'users', uid), {
-            'wallet.bonus': increment(newUserReward),
-            referralClaimed: true
-          });
-          
-          batch.set(doc(collection(db, 'transactions')), {
-            userId: uid,
+      // Reward Referrer (if allowed)
+      const rawRefReward = refSettings.perReferralReward ?? 3;
+      const refReward = rawRefReward === 50 ? 3 : rawRefReward;
+      if (refReward > 0 && referrerId !== uid) {
+        try {
+          const referrerUpdate: any = {};
+          if (refSettings.rewardType === 'deposit') {
+            referrerUpdate['wallet.deposit'] = increment(refReward);
+          } else if (refSettings.rewardType === 'bonus') {
+            referrerUpdate['wallet.bonus'] = increment(refReward);
+          } else if (refSettings.rewardType === 'both') {
+            const depPercentage = refSettings.depositPercentage || 50;
+            const depAmount = (refReward * depPercentage) / 100;
+            const bonusAmount = refReward - depAmount;
+            referrerUpdate['wallet.deposit'] = increment(depAmount);
+            referrerUpdate['wallet.bonus'] = increment(bonusAmount);
+          }
+          const refBatch = writeBatch(db);
+          refBatch.update(doc(db, 'users', referrerId), referrerUpdate);
+          refBatch.set(doc(collection(db, 'transactions')), {
+            userId: referrerId,
             type: 'bonus',
-            amount: newUserReward,
+            amount: refReward,
             status: 'completed',
-            title: `Referral Bonus (from ${currentUser.referredBy})`,
+            title: `Referral Reward: ${currentUser.username}`.slice(0, 200),
             createdAt: serverTimestamp()
           });
-        } else {
-          batch.update(doc(db, 'users', uid), { referralClaimed: true });
+          await refBatch.commit();
+        } catch {
+          // Cross-user wallet writes require server/admin execution under strict owner rules
         }
-
-        await batch.commit();
-        console.log("Referral rewards processed successfully");
       }
+      console.log("Referral rewards processed successfully");
     } catch (err) {
       console.error("Error processing referral reward:", err);
     }
   };
+
+  const renderWelcomeSplash = () => (
+    <AnimatePresence>
+      {showWelcomeSplash && (
+        <motion.div
+          key={`welcome-splash-${splashRunId}`}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.3 }}
+          className="fixed inset-0 z-[200] bg-[#050508] flex items-center justify-center overflow-hidden select-none"
+        >
+          <div className="relative w-full max-w-lg h-full flex items-center justify-center">
+            <img
+              src="/assets/aistudio/fx-welcome_31ecf10b.png"
+              alt="Welcome to FX Arena Esports"
+              className="w-full h-full object-contain"
+            />
+            <motion.div
+              initial={{ scaleX: 0 }}
+              animate={{ scaleX: 1 }}
+              transition={{ duration: 3, ease: 'linear' }}
+              style={{ transformOrigin: 'left' }}
+              className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-red-600 via-orange-500 to-amber-400"
+            />
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 
   if (loading) {
     return (
       <div className="min-h-screen bg-background flex flex-col items-center justify-center">
         <div className="w-12 h-12 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
         <p className="mt-4 text-xs font-black uppercase tracking-widest text-neutral-500">Initializing...</p>
+        {renderWelcomeSplash()}
       </div>
     );
   }
@@ -731,34 +769,8 @@ export default function App() {
         <div className="absolute bottom-[-10%] right-[-20%] w-[80%] h-[40%] bg-secondary/10 blur-[120px] rounded-full" />
       </div>
 
-      {/* 3-Second Post-Login Welcome Splash */}
-      <AnimatePresence>
-        {showPostLoginSplash && (
-          <motion.div
-            key="post-login-splash"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.35 }}
-            className="fixed inset-0 z-[200] bg-[#050508] flex items-center justify-center overflow-hidden select-none"
-          >
-            <div className="relative w-full max-w-lg h-full flex items-center justify-center">
-              <img
-                src="/assets/aistudio/fx-welcome_31ecf10b.png"
-                alt="Welcome to FX Arena Esports"
-                className="w-full h-full object-contain"
-              />
-              <motion.div
-                initial={{ scaleX: 0 }}
-                animate={{ scaleX: 1 }}
-                transition={{ duration: 3, ease: 'linear' }}
-                style={{ transformOrigin: 'left' }}
-                className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-red-600 via-orange-500 to-amber-400"
-              />
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* 3-Second Welcome Splash (Shows on App Open & After Login) */}
+      {renderWelcomeSplash()}
     </div>
   );
 }

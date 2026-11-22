@@ -17,12 +17,16 @@ interface AuthProps {
 }
 
 const DEFAULT_USER_DATA = {
-  walletBalance: 100,
-  bonus: 100,
-  winnings: 0,
+  wallet: {
+    deposit: 0,
+    winnings: 0,
+    bonus: 0,
+  },
   isKycVerified: false,
+  isAdmin: false,
   stats: {
     matchesPlayed: 0,
+    totalWins: 0,
     totalKills: 0,
     totalWinnings: 0,
   }
@@ -60,16 +64,38 @@ export default function Auth({ onLogin }: AuthProps) {
     return params.get('ref');
   };
 
-  const mapAuthError = (code: string) => {
+  const mapAuthError = (error: any) => {
+    const code = typeof error === 'string' ? error : (error?.code || '');
+    const msg = typeof error === 'object' && error?.message ? String(error.message) : '';
+
+    if (code === 'auth/operation-not-allowed' || msg.includes('PASSWORD_LOGIN_DISABLED')) {
+      return 'Email/Password signup is not enabled in Firebase Console yet. Enable Email/Password in Firebase Auth Providers or use "Continue with Google".';
+    }
     switch (code) {
-      case 'auth/email-already-in-use': return 'Email already registered';
-      case 'auth/weak-password': return 'Password must be at least 6 characters';
-      case 'auth/network-request-failed': return 'Check your internet connection';
-      case 'auth/invalid-email': return 'Enter valid email';
+      case 'auth/email-already-in-use':
+        return 'Email already registered. Please Login instead.';
+      case 'auth/weak-password':
+        return 'Password must be at least 6 characters.';
+      case 'auth/network-request-failed':
+        return 'Network error. Please check your internet connection.';
+      case 'auth/invalid-email':
+        return 'Enter a valid email address.';
       case 'auth/user-not-found':
       case 'auth/wrong-password':
-      case 'auth/invalid-credential': return 'Invalid email or password';
-      default: return 'An unexpected error occurred. Try again.';
+      case 'auth/invalid-credential':
+        return 'Invalid email or password.';
+      case 'auth/too-many-requests':
+        return 'Too many attempts. Please wait a minute and try again.';
+      case 'auth/unauthorized-domain':
+        return 'This app domain is not authorized in Firebase Auth settings.';
+      case 'auth/popup-closed-by-user':
+      case 'auth/cancelled-popup-request':
+        return 'Google sign-in was cancelled. Please try again.';
+      case 'auth/operation-not-supported-in-this-environment':
+      case 'auth/popup-blocked':
+        return 'Google popup is not supported in this view. Please use Email & Password.';
+      default:
+        return msg || 'Authentication failed. Please try again.';
     }
   };
 
@@ -90,11 +116,11 @@ export default function Auth({ onLogin }: AuthProps) {
 
     setForgotPasswordLoading(true);
     try {
-      await withTimeout(sendPasswordResetEmail(auth, email), 5000, 'Request timed out. Please try again.');
+      await withTimeout(sendPasswordResetEmail(auth, email.trim()), 15000, 'Request timed out. Please try again.');
       setSuccessMsg('Password reset link sent to your email');
     } catch (error: any) {
       console.error(error);
-      setErrors({ email: mapAuthError(error.code) });
+      setErrors({ email: mapAuthError(error) });
     } finally {
       setForgotPasswordLoading(false);
     }
@@ -107,17 +133,21 @@ export default function Auth({ onLogin }: AuthProps) {
     setErrors({});
     setSuccessMsg('');
     
+    const cleanEmail = email.trim();
+    const cleanUsername = username.trim().slice(0, 100);
+    const cleanPhone = phone.trim().slice(0, 30);
+
     // Basic Validation
     const newErrors: { [key: string]: string } = {};
-    if (!email) newErrors.email = 'Email required';
+    if (!cleanEmail) newErrors.email = 'Email required';
     if (!password) newErrors.password = 'Password required';
     if (password && password.length < 6) newErrors.password = 'Password must be at least 6 characters';
     
     if (!isLogin) {
-      if (!username) newErrors.username = 'Username required';
-      if (!phone) {
+      if (!cleanUsername) newErrors.username = 'Username required';
+      if (!cleanPhone) {
         newErrors.phone = '10 digit phone required';
-      } else if (!validatePhone(phone)) {
+      } else if (!validatePhone(cleanPhone)) {
         newErrors.phone = 'Enter valid 10 digit number';
       }
     }
@@ -130,19 +160,17 @@ export default function Auth({ onLogin }: AuthProps) {
     setLoading(true);
     try {
       if (isLogin) {
-        // Handle Login
         try {
-          await withTimeout(signInWithEmailAndPassword(auth, email, password), 5000, 'Login taking too long. Check connection.');
+          await withTimeout(signInWithEmailAndPassword(auth, cleanEmail, password), 15000, 'Login taking too long. Check connection.');
           onLogin();
         } catch (error: any) {
-          setErrors({ general: mapAuthError(error.code || error.message) });
+          setErrors({ general: mapAuthError(error) });
         }
       } else {
-        // Handle Registration
         try {
           const userCredential = await withTimeout(
-            createUserWithEmailAndPassword(auth, email, password),
-            5000,
+            createUserWithEmailAndPassword(auth, cleanEmail, password),
+            15000,
             'Signup taking too long. Check connection.'
           );
           const firebaseUser = userCredential.user;
@@ -160,40 +188,48 @@ export default function Auth({ onLogin }: AuthProps) {
           try {
             await withTimeout(
               setDoc(doc(db, 'users', firebaseUser.uid), {
-                username,
-                email,
-                phone,
+                username: cleanUsername,
+                email: cleanEmail.slice(0, 200),
+                phone: cleanPhone,
                 ...DEFAULT_USER_DATA,
                 referredBy: referredBy || null,
                 deviceId,
                 referralClaimed: false,
                 createdAt: serverTimestamp(),
               }),
-              3000,
-              'Profile creation delayed.'
+              8000,
+              'Profile setup delayed.'
             );
           } catch (fsError) {
             console.warn('Firestore profile creation failed or timed out:', fsError);
-            // Profile will be checked/re-created in App.tsx on initialization if missing
-            setErrors({ general: 'Profile created with warnings. Please update phone in settings later.' });
           }
 
           setSuccessMsg('Registration successful! Redirecting...');
           onLogin();
-          // UI will redirect via onAuthStateChanged in App.tsx but onLogin provides immediate state feedback
         } catch (error: any) {
-          setErrors({ general: mapAuthError(error.code || error.message) });
+          setErrors({ general: mapAuthError(error) });
         }
       }
     } catch (err: any) {
-      setErrors({ general: err.message || 'Something went wrong' });
+      setErrors({ general: mapAuthError(err) });
     } finally {
-      // Auto stop loader
       setLoading(false);
     }
   };
 
+  const isNativeApk =
+    typeof window !== 'undefined' &&
+    Boolean((window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.());
+
   const handleGoogleLogin = async () => {
+    if (isNativeApk) {
+      setErrors({
+        general:
+          'Mobile APK supports Email & Password login. New here? Tap "Register here" above. Already used Google on web? Enter your Gmail and tap "Forgot Password?" to set a password.',
+      });
+      return;
+    }
+
     setLoading(true);
     setErrors({});
     try {
@@ -202,14 +238,7 @@ export default function Auth({ onLogin }: AuthProps) {
       onLogin();
     } catch (error: any) {
       console.error('Login failed:', error);
-      const code = error?.code || '';
-      if (code === 'auth/operation-not-supported-in-this-environment' || code === 'auth/popup-blocked') {
-        setErrors({ general: 'Google popup is not supported inside this app view. Please login or register with Email & Password.' });
-      } else if (code === 'auth/unauthorized-domain') {
-        setErrors({ general: 'Domain not authorized in Firebase. Use Email & Password login or authorize domain.' });
-      } else {
-        setErrors({ general: 'Google login failed. Try Email & Password login.' });
-      }
+      setErrors({ general: mapAuthError(error) });
     } finally {
       setLoading(false);
     }
@@ -400,20 +429,28 @@ export default function Auth({ onLogin }: AuthProps) {
             </button>
           </form>
 
-          <div className="flex items-center gap-4 my-6">
-            <div className="h-px flex-1 bg-neutral-800" />
-            <span className="text-[10px] uppercase font-black tracking-widest text-neutral-600">OR</span>
-            <div className="h-px flex-1 bg-neutral-800" />
-          </div>
+          {!isNativeApk ? (
+            <>
+              <div className="flex items-center gap-4 my-6">
+                <div className="h-px flex-1 bg-neutral-800" />
+                <span className="text-[10px] uppercase font-black tracking-widest text-neutral-600">OR</span>
+                <div className="h-px flex-1 bg-neutral-800" />
+              </div>
 
-          <button
-            onClick={handleGoogleLogin}
-            disabled={loading}
-            className="w-full bg-white text-black font-black h-12 rounded-xl shadow-lg shadow-white/5 flex items-center justify-center gap-3 active:scale-95 transition-all text-xs uppercase tracking-[0.2em] disabled:opacity-50"
-          >
-            <Chrome size={18} />
-            {loading ? 'Processing...' : 'Continue with Google'}
-          </button>
+              <button
+                onClick={handleGoogleLogin}
+                disabled={loading}
+                className="w-full bg-white text-black font-black h-12 rounded-xl shadow-lg shadow-white/5 flex items-center justify-center gap-3 active:scale-95 transition-all text-xs uppercase tracking-[0.2em] disabled:opacity-50"
+              >
+                <Chrome size={18} />
+                {loading ? 'Processing...' : 'Continue with Google'}
+              </button>
+            </>
+          ) : (
+            <p className="text-[10px] text-center mt-5 text-neutral-400 leading-relaxed bg-black/30 border border-white/5 rounded-xl px-3 py-2.5">
+              Used Google Sign-In on web earlier? Enter that Gmail above and tap <span className="text-purple-400 font-bold">Forgot Password?</span> to set an app password.
+            </p>
+          )}
           
           <div className="text-[10px] text-center mt-6 text-neutral-500">
             {isLogin ? 'New player?' : 'Existing player?'}{' '}

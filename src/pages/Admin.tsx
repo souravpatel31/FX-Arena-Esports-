@@ -205,6 +205,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const [selectedQrAmountKey, setSelectedQrAmountKey] = useState<string>('default');
   const [isUploadingQr, setIsUploadingQr] = useState(false);
   const [qrUploadProgress, setQrUploadProgress] = useState(0);
+  const [paymentFeedback, setPaymentFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Modal back handlers
   useModalBackHandler(isDeleteConfirmOpen.isOpen, () => setIsDeleteConfirmOpen({ isOpen: false, matchId: '' }));
@@ -1038,9 +1039,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   };
 
   const handleToggleGateway = async (gatewayId: string, currentStatus: boolean) => {
+    setPaymentFeedback(null);
     const targetGateway = paymentGateways.find(g => g.id === gatewayId);
     if (!currentStatus && (!targetGateway || (!targetGateway.apiKey && !targetGateway.merchantId))) {
-      alert('Please enter your API Key / Credentials first before activating this automatic gateway.');
+      setPaymentFeedback({ type: 'error', message: 'Please enter your API Key / Credentials first before activating this automatic gateway.' });
       openGatewayModal(gatewayId, targetGateway || null);
       return;
     }
@@ -1082,11 +1084,12 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         }, { merge: true });
         await batch.commit();
         setQrForm(prev => ({ ...prev, isActive: false }));
+        setPaymentFeedback({ type: 'success', message: `${targetGateway?.name || gatewayId.toUpperCase()} activated for Add Cash.` });
       } else {
         const batch = writeBatch(db);
         batch.update(doc(db, 'paymentSettings', gatewayId), { 
           isActive: false,
-          updatedAt: serverTimestamp()
+          updatedAt: serverTimestamp() 
         });
         batch.set(doc(db, 'appSettings', 'active_gateway'), {
           id: gatewayId,
@@ -1094,8 +1097,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           updatedAt: serverTimestamp()
         }, { merge: true });
         await batch.commit();
+        setPaymentFeedback({ type: 'success', message: 'Automatic gateway paused.' });
       }
-    } catch (e) {
+    } catch (e: any) {
+      setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to update gateway status.' });
       handleFirestoreError(e, OperationType.UPDATE, `paymentSettings/${gatewayId}`);
     } finally {
       setIsProcessing(false);
@@ -1103,9 +1108,14 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   };
 
   const handleSaveGateway = async () => {
-    if (!gatewayForm.name.trim()) return alert('Gateway Name is required');
+    setPaymentFeedback(null);
+    if (!gatewayForm.name.trim()) {
+      setPaymentFeedback({ type: 'error', message: 'Gateway Name is required.' });
+      return;
+    }
     if (!gatewayForm.apiKey.trim() && !gatewayForm.merchantId.trim()) {
-      return alert('Please enter at least API Key or Merchant ID.');
+      setPaymentFeedback({ type: 'error', message: 'Please enter at least API Key or Merchant ID.' });
+      return;
     }
     setIsProcessing(true);
     try {
@@ -1149,8 +1159,12 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         upiId: '',
         isProduction: false
       });
-      alert(`${gatewayData.name} credentials saved! Toggle its switch ON whenever you want to switch from Manual QR to Automatic Gateway.`);
-    } catch (e) {
+      setPaymentFeedback({
+        type: 'success',
+        message: `${gatewayData.name} credentials saved! Toggle its switch ON whenever you want to switch from Manual QR to Automatic Gateway.`
+      });
+    } catch (e: any) {
+      setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to save gateway credentials.' });
       handleFirestoreError(e, OperationType.WRITE, 'paymentSettings');
     } finally {
       setIsProcessing(false);
@@ -1177,21 +1191,56 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     }
   };
 
+  const compactQrDataUrl = (dataUrl: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 360;
+        const scale = Math.min(1, maxDim / Math.max(img.width || maxDim, img.height || maxDim));
+        const w = Math.max(120, Math.round((img.width || maxDim) * scale));
+        const h = Math.max(120, Math.round((img.height || maxDim) * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        const compressed = canvas.toDataURL('image/jpeg', 0.85);
+        resolve(compressed.length < dataUrl.length ? compressed : dataUrl);
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  };
+
   const handleQrImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setPaymentFeedback(null);
     setIsUploadingQr(true);
     setQrUploadProgress(15);
     try {
-      const downloadURL = await uploadOriginalImage(file, (progress) => {
+      let downloadURL = await uploadOriginalImage(file, (progress) => {
         setQrUploadProgress(progress);
       });
+      if (downloadURL.startsWith('data:') && downloadURL.length > 80000) {
+        downloadURL = await compactQrDataUrl(downloadURL);
+      }
       setActiveQrUrl(downloadURL);
       setQrUploadProgress(100);
+      setPaymentFeedback({
+        type: 'success',
+        message: `${selectedQrAmountKey === 'default' ? 'Default' : `₹${selectedQrAmountKey}`} QR image uploaded! Click "Save QR Scanner" below to publish it.`
+      });
     } catch (error: any) {
       console.error('QR Upload Error:', error);
-      alert('QR image upload failed, try again');
+      setPaymentFeedback({ type: 'error', message: error?.message || 'QR image upload failed, try again.' });
     } finally {
       setIsUploadingQr(false);
       e.target.value = '';
@@ -1199,30 +1248,34 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   };
 
   const handleSaveQrSettings = async () => {
+    setPaymentFeedback(null);
     const cleanDefaultUrl = qrForm.qrImageUrl.trim();
-    if (cleanDefaultUrl.startsWith('data:') && cleanDefaultUrl.length > 2500) {
-      return alert('Default QR image upload did not return a hosted URL. Please try uploading again or paste an image URL.');
+    if (cleanDefaultUrl.startsWith('data:') && cleanDefaultUrl.length > 200000) {
+      setPaymentFeedback({ type: 'error', message: 'Default QR image is too large to save directly. Please re-upload a smaller image or paste an image URL.' });
+      return;
     }
 
     const cleanAmountQrs: Record<string, string> = {};
     for (const [amtKey, rawVal] of Object.entries(qrForm.amountQrs || {})) {
       const val = typeof rawVal === 'string' ? rawVal.trim() : '';
       if (!val) continue;
-      if (val.startsWith('data:') && val.length > 2500) {
-        return alert(`₹${amtKey} QR image upload did not return a hosted URL. Please upload again or paste an image URL.`);
+      if (val.startsWith('data:') && val.length > 200000) {
+        setPaymentFeedback({ type: 'error', message: `₹${amtKey} QR image is too large. Please re-upload a smaller image or paste an image URL.` });
+        return;
       }
-      cleanAmountQrs[amtKey] = val.slice(0, 2500);
+      cleanAmountQrs[amtKey] = val.startsWith('data:') ? val : val.slice(0, 2500);
     }
 
     const hasAnyQr = Boolean(cleanDefaultUrl || Object.keys(cleanAmountQrs).length > 0);
     if (qrForm.isActive && !hasAnyQr) {
-      return alert('Please upload at least one QR Scanner image (Default or for an amount option) first.');
+      setPaymentFeedback({ type: 'error', message: 'Please upload at least one QR Scanner image (Default or for an amount option) first.' });
+      return;
     }
 
     setIsProcessing(true);
     try {
       const qrPayload = {
-        qrImageUrl: cleanDefaultUrl.slice(0, 2500),
+        qrImageUrl: cleanDefaultUrl.startsWith('data:') ? cleanDefaultUrl : cleanDefaultUrl.slice(0, 2500),
         amountQrs: cleanAmountQrs,
         upiId: qrForm.upiId.trim().slice(0, 128),
         merchantName: (qrForm.merchantName.trim() || 'FX Arena Esports').slice(0, 100),
@@ -1233,8 +1286,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         paymentQr: qrPayload,
         updatedAt: serverTimestamp()
       }, { merge: true });
-      alert('QR Scanner settings saved! Users will now see the matching QR on Add Coins.');
-    } catch (e) {
+      setPaymentFeedback({ type: 'success', message: 'QR Scanner settings saved! Users will now see the QR when clicking Pay with QR Scanner.' });
+    } catch (e: any) {
+      setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to save QR Scanner settings.' });
       handleFirestoreError(e, OperationType.WRITE, 'appSettings/payment_qr');
     } finally {
       setIsProcessing(false);
@@ -1243,6 +1297,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
   const handleApproveTransaction = async (tx: any) => {
     if (!tx?.id || tx.status !== 'pending') return;
+    setPaymentFeedback(null);
     setIsProcessing(true);
     try {
       await runTransaction(db, async (transaction) => {
@@ -1261,8 +1316,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           });
         }
       });
+      setPaymentFeedback({ type: 'success', message: `Approved ₹${tx.amount} ${tx.type} request.` });
     } catch (e: any) {
-      alert(e?.message || 'Failed to approve transaction');
+      setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to approve transaction' });
       handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
     } finally {
       setIsProcessing(false);
@@ -1272,11 +1328,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const handleRejectTransaction = async (tx: any) => {
     if (!tx?.id || tx.status !== 'pending') return;
     const isWithdraw = tx.type === 'withdraw' || tx.type === 'withdrawal';
-    const confirmMsg = isWithdraw
-      ? `Reject ₹${tx.amount} withdrawal and refund back to user's winnings?`
-      : `Reject ₹${tx.amount} deposit request?`;
-    if (!confirm(confirmMsg)) return;
-
+    setPaymentFeedback(null);
     setIsProcessing(true);
     try {
       await runTransaction(db, async (transaction) => {
@@ -1295,8 +1347,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           });
         }
       });
+      setPaymentFeedback({ type: 'success', message: `Rejected ₹${tx.amount} ${tx.type} request.` });
     } catch (e: any) {
-      alert(e?.message || 'Failed to reject transaction');
+      setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to reject transaction' });
       handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
     } finally {
       setIsProcessing(false);
@@ -1776,6 +1829,29 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-6"
             >
+              {paymentFeedback && (
+                <div className={`p-3 rounded-2xl border flex items-start gap-2.5 text-xs font-bold ${
+                  paymentFeedback.type === 'success'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : 'bg-red-500/10 border-red-500/30 text-red-300'
+                }`}>
+                  {paymentFeedback.type === 'success' ? (
+                    <CheckCircle2 size={16} className="shrink-0 mt-0.5 text-emerald-400" />
+                  ) : (
+                    <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-400" />
+                  )}
+                  <p className="flex-1 leading-snug">{paymentFeedback.message}</p>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentFeedback(null)}
+                    className="opacity-60 hover:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <XCircle size={14} />
+                  </button>
+                </div>
+              )}
+
               {/* Pending Deposits & Withdrawals Queue */}
               {(() => {
                 const pendingList = transactions.filter(t => t.status === 'pending');
@@ -2615,6 +2691,29 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                   </div>
                 </div>
 
+                {paymentFeedback && (
+                  <div className={`p-3 rounded-2xl border flex items-start gap-2.5 text-xs font-bold ${
+                    paymentFeedback.type === 'success'
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      : 'bg-red-500/10 border-red-500/30 text-red-300'
+                  }`}>
+                    {paymentFeedback.type === 'success' ? (
+                      <CheckCircle2 size={16} className="shrink-0 mt-0.5 text-emerald-400" />
+                    ) : (
+                      <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-400" />
+                    )}
+                    <p className="flex-1 leading-snug">{paymentFeedback.message}</p>
+                    <button
+                      type="button"
+                      onClick={() => setPaymentFeedback(null)}
+                      className="opacity-60 hover:opacity-100"
+                      aria-label="Dismiss"
+                    >
+                      <XCircle size={14} />
+                    </button>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   disabled={isProcessing || isUploadingQr}
@@ -3333,6 +3432,13 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     </div>
                   );
                 })()}
+
+                {paymentFeedback && paymentFeedback.type === 'error' && (
+                  <div className="p-3 rounded-2xl border bg-red-500/10 border-red-500/30 text-red-300 flex items-start gap-2.5 text-xs font-bold">
+                    <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-400" />
+                    <p className="flex-1 leading-snug">{paymentFeedback.message}</p>
+                  </div>
+                )}
 
                 <div className="pt-2">
                   <button 

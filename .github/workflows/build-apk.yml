@@ -53,11 +53,12 @@ jobs:
           res_dir = "android/app/src/main/res"
           base_img = Image.open(logo_path).convert("RGBA")
 
-          # Remove adaptive icon XMLs so custom PNG launcher icon is always shown cleanly
-          anydpi_dir = os.path.join(res_dir, "mipmap-anydpi-v26")
-          if os.path.isdir(anydpi_dir):
-              for f in os.listdir(anydpi_dir):
-                  os.remove(os.path.join(anydpi_dir, f))
+          # Remove adaptive icon XMLs and vector foregrounds so custom PNG launcher icon is always shown cleanly
+          for d in ["mipmap-anydpi-v26", "drawable-v24"]:
+              target = os.path.join(res_dir, d)
+              if os.path.isdir(target):
+                  import shutil
+                  shutil.rmtree(target)
 
           sizes = {
               "mipmap-mdpi": 48,
@@ -96,14 +97,85 @@ jobs:
           print("Applied FX Arena Esports launcher icons and splash screens successfully.")
           EOF
 
-      - name: Build Android APK
+      - name: Configure Release SDK & Versioning
+        run: |
+          python3 - << 'EOF'
+          import re
+
+          vars_path = "android/variables.gradle"
+          with open(vars_path, "r") as f:
+              vars_txt = f.read()
+          vars_txt = re.sub(r"targetSdkVersion\s*=\s*\d+", "targetSdkVersion = 34", vars_txt)
+          with open(vars_path, "w") as f:
+              f.write(vars_txt)
+
+          gradle_path = "android/app/build.gradle"
+          with open(gradle_path, "r") as f:
+              gradle_txt = f.read()
+          run_num = "${{ github.run_number }}"
+          gradle_txt = re.sub(r"versionCode\s+\d+", f"versionCode {run_num}", gradle_txt)
+          gradle_txt = re.sub(r'versionName\s+"[^"]+"', f'versionName "1.0.{run_num}"', gradle_txt)
+          with open(gradle_path, "w") as f:
+              f.write(gradle_txt)
+          print(f"Configured targetSdkVersion=34, versionCode={run_num}, versionName=1.0.{run_num}")
+          EOF
+
+      - name: Build Signed Release APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
+          cd ..
 
-      - name: Prepare Final APK File
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk FX-Arena-Esports.apk
+          UNSIGNED_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          if [ ! -f "$UNSIGNED_APK" ]; then
+            echo "Release APK not found at $UNSIGNED_APK"
+            exit 1
+          fi
+
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          echo "Using Android build-tools: $BUILD_TOOLS"
+
+          "$BUILD_TOOLS/zipalign" -p -f 4 "$UNSIGNED_APK" app-release-aligned.apk
+
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/fx-release.keystore
+            KS_PASS="$ANDROID_KEYSTORE_PASSWORD"
+            KEY_ALIAS="$ANDROID_KEY_ALIAS"
+            KEY_PASS="$ANDROID_KEY_PASSWORD"
+          else
+            KS_PASS=$(openssl rand -hex 16)
+            KEY_ALIAS="fxarena"
+            KEY_PASS="$KS_PASS"
+            keytool -genkeypair -v \
+              -keystore /tmp/fx-release.keystore \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$KS_PASS" \
+              -keypass "$KEY_PASS" \
+              -dname "CN=FX Arena Esports, OU=Mobile, O=FX Arena Esports, L=Delhi, ST=DL, C=IN"
+          fi
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks /tmp/fx-release.keystore \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KS_PASS" \
+            --key-pass "pass:$KEY_PASS" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out FX-Arena-Esports.apk \
+            app-release-aligned.apk
+
+          "$BUILD_TOOLS/apksigner" verify --verbose FX-Arena-Esports.apk
+          ls -lh FX-Arena-Esports.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -116,6 +188,6 @@ jobs:
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: FX Arena Esports v1.0.${{ github.run_number }}
-          body: Official Android APK for FX Arena Esports. Download and install FX-Arena-Esports.apk on your Android phone.
+          body: Official signed Release Android APK for FX Arena Esports. Uninstall any older version before installing FX-Arena-Esports.apk on your Android phone.
           files: FX-Arena-Esports.apk
           make_latest: true

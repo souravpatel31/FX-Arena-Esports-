@@ -5,7 +5,8 @@ const config: CapacitorConfig = {
   appName: 'FX Arena Esports',
   webDir: 'dist',
   server: {
-    androidScheme: 'https'
+    androidScheme: 'https',
+    hostname: 'secret-scanner-g7cvm.web.app'
   }
 };
 

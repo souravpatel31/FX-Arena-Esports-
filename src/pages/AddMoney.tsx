@@ -32,18 +32,23 @@ interface PaymentQrConfig {
 export default function AddMoney({ onPageChange }: AddMoneyProps) {
   const [amount, setAmount] = useState('100');
   const [loading, setLoading] = useState(false);
+  const [qrLoading, setQrLoading] = useState(true);
   const [activeGateway, setActiveGateway] = useState<PaymentGateway | null>(null);
   const [qrConfig, setQrConfig] = useState<PaymentQrConfig | null>(null);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
 
   // QR Scanner Modal state
   const [showQrModal, setShowQrModal] = useState(false);
   const [utrNumber, setUtrNumber] = useState('');
   const [submittingQr, setSubmittingQr] = useState(false);
   const [qrSubmitted, setQrSubmitted] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [qrImageError, setQrImageError] = useState(false);
   const [copiedUpi, setCopiedUpi] = useState(false);
 
   // Gateway Polling state (ZapUPI fallback)
   const [pollingOrderId, setPollingOrderId] = useState<string | null>(null);
+  const [gatewayPaymentUrl, setGatewayPaymentUrl] = useState<string | null>(null);
   const [pollingActive, setPollingActive] = useState(false);
   const [pollingTimedOut, setPollingTimedOut] = useState(false);
 
@@ -55,9 +60,15 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
   const isAboveMax = !isNaN(numericAmount) && numericAmount > 10000;
 
   const amountKey = !isNaN(numericAmount) ? String(numericAmount) : amount.trim();
-  const resolvedQrUrl = (qrConfig?.amountQrs && qrConfig.amountQrs[amountKey]) || qrConfig?.qrImageUrl || '';
+  const specificQr = typeof qrConfig?.amountQrs?.[amountKey] === 'string' ? qrConfig.amountQrs[amountKey].trim() : '';
+  const defaultQr = typeof qrConfig?.qrImageUrl === 'string' ? qrConfig.qrImageUrl.trim() : '';
+  const resolvedQrUrl = specificQr || defaultQr;
+  const availablePresetQrs = presetAmounts.filter((p) => {
+    const val = qrConfig?.amountQrs?.[p];
+    return typeof val === 'string' && Boolean(val.trim());
+  });
   const hasAnyQr = Boolean(
-    qrConfig?.qrImageUrl ||
+    defaultQr ||
     (qrConfig?.amountQrs && Object.values(qrConfig.amountQrs).some((u) => typeof u === 'string' && Boolean(u.trim())))
   );
   const isQrAvailable = Boolean(resolvedQrUrl && qrConfig?.isActive !== false);
@@ -74,9 +85,11 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
         } else {
           setQrConfig(null);
         }
+        setQrLoading(false);
       },
       (err) => {
         console.warn('[AddMoney] QR settings listener:', err.message);
+        setQrLoading(false);
       }
     );
 
@@ -154,22 +167,42 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
   }, [pollingActive, pollingOrderId]);
 
   const handleDeposit = async () => {
-    if (!auth.currentUser || !amount) return;
+    setFeedbackError(null);
+    if (!auth.currentUser) {
+      setFeedbackError('Please sign in first to add coins.');
+      return;
+    }
+    if (!amount) {
+      setFeedbackError('Please enter an amount between ₹10 and ₹10,000.');
+      return;
+    }
     const value = parseInt(amount, 10);
-    if (isNaN(value) || value < 10 || value > 10000) return;
+    if (isNaN(value) || value < 10 || value > 10000) {
+      setFeedbackError('Amount must be between ₹10 and ₹10,000.');
+      return;
+    }
 
     // 1. If Admin has configured a QR Scanner (or no automated gateway has keys), use QR Scanner flow
     if (useQrFlow) {
+      if (qrLoading) {
+        setFeedbackError('Loading QR Scanner settings... please tap again in a second.');
+        return;
+      }
       if (!isQrAvailable) {
         if (hasAnyQr && qrConfig?.isActive !== false) {
-          alert(`QR Scanner is not set for ₹${value} yet. Please select a preset amount or ask Admin to set a Default QR Scanner.`);
+          const availableText = availablePresetQrs.length > 0
+            ? ` Available QR amounts: ${availablePresetQrs.map((p) => `₹${p}`).join(', ')}.`
+            : '';
+          setFeedbackError(`QR Scanner is not set for ₹${value} yet.${availableText} Select one of the available amounts or ask Admin to set a Default QR.`);
         } else {
-          alert('QR Scanner is not uploaded yet. Please ask Admin to upload the QR Scanner in Admin Panel -> Payment.');
+          setFeedbackError('QR Scanner is not uploaded yet. Please upload and save a QR Scanner in Admin Panel → Payment.');
         }
         return;
       }
       setUtrNumber('');
       setQrSubmitted(false);
+      setModalError(null);
+      setQrImageError(false);
       setShowQrModal(true);
       return;
     }
@@ -181,25 +214,27 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
 
       if (activeGateway?.id === 'zapupi' || result?.order_id) {
         setPollingOrderId(result.order_id);
+        setGatewayPaymentUrl(result.payment_url || null);
         setPollingActive(true);
-        if (result.payment_url) {
-          window.open(result.payment_url, '_blank');
-        }
       }
     } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : 'Payment initiation failed';
       console.error('[AddMoney] Error:', error);
-      alert(errorMessage);
+      setFeedbackError(errorMessage);
     } finally {
       setLoading(false);
     }
   };
 
   const handleSubmitQrPayment = async () => {
-    if (!auth.currentUser) return;
+    setModalError(null);
+    if (!auth.currentUser) {
+      setModalError('Session expired. Please sign in again.');
+      return;
+    }
     const cleanUtr = utrNumber.trim().slice(0, 64);
     if (cleanUtr.length < 6) {
-      alert('Please enter your valid UTR / Transaction Reference ID (at least 6 characters).');
+      setModalError('Please enter your valid UTR / Transaction Reference ID (at least 6 characters).');
       return;
     }
 
@@ -219,7 +254,7 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
     } catch (error: any) {
       console.error('[AddMoney] QR Deposit submit error:', error);
       handleFirestoreError(error, OperationType.WRITE, 'transactions');
-      alert(error?.message || 'Failed to submit deposit request.');
+      setModalError(error?.message || 'Failed to submit deposit request.');
     } finally {
       setSubmittingQr(false);
     }
@@ -233,10 +268,12 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
   };
 
   const handleQuickAmountClick = (val: string) => {
+    setFeedbackError(null);
     setAmount(val);
   };
 
   const handleClear = () => {
+    setFeedbackError(null);
     setAmount('');
   };
 
@@ -359,17 +396,49 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
           </button>
         </div>
 
-        {/* 5. MAIN PAYMENT BUTTON */}
-        <div className="pt-2">
+        {/* 5. MAIN PAYMENT BUTTON & INLINE FEEDBACK */}
+        <div className="pt-2 space-y-3">
+          {feedbackError && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-3.5 text-red-800 space-y-2 shadow-xs">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle size={17} className="text-red-600 shrink-0 mt-0.5" />
+                <p className="text-xs font-bold leading-snug flex-1">{feedbackError}</p>
+                <button
+                  type="button"
+                  onClick={() => setFeedbackError(null)}
+                  className="text-red-400 hover:text-red-600 p-0.5"
+                  aria-label="Dismiss error"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              {useQrFlow && hasAnyQr && availablePresetQrs.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pl-6">
+                  {availablePresetQrs.map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => handleQuickAmountClick(p)}
+                      className="px-2.5 py-1 bg-white border border-red-200 hover:border-orange-400 rounded-lg text-[11px] font-black text-orange-600"
+                    >
+                      Select ₹{p}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <button
+            type="button"
             onClick={handleDeposit}
             disabled={loading || !isAmountValid}
             className="w-full py-4 sm:py-4.5 bg-[#f97316] hover:bg-[#ea580c] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 text-white rounded-xl sm:rounded-2xl font-black text-sm sm:text-base uppercase tracking-wider shadow-lg shadow-orange-500/25 transition-all flex items-center justify-center gap-2"
           >
-            {loading ? (
+            {loading || (useQrFlow && qrLoading) ? (
               <>
                 <Loader2 className="animate-spin" size={18} />
-                <span>PROCESSING...</span>
+                <span>{qrLoading ? 'LOADING QR...' : 'PROCESSING...'}</span>
               </>
             ) : useQrFlow ? (
               <>
@@ -469,11 +538,24 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
                   {/* QR Code Frame */}
                   <div className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl p-4 flex flex-col items-center justify-center mb-4">
                     <div className="w-52 h-52 sm:w-56 sm:h-56 bg-white rounded-xl p-2 shadow-sm border border-neutral-200 flex items-center justify-center overflow-hidden">
-                      <img
-                        src={resolvedQrUrl}
-                        alt="UPI Payment QR Code"
-                        className="w-full h-full object-contain"
-                      />
+                      {!qrImageError && resolvedQrUrl ? (
+                        <img
+                          src={resolvedQrUrl}
+                          alt="UPI Payment QR Code"
+                          onError={() => setQrImageError(true)}
+                          className="w-full h-full object-contain"
+                        />
+                      ) : (
+                        <div className="text-center px-3 text-neutral-500 space-y-1.5">
+                          <AlertCircle size={28} className="mx-auto text-orange-500" />
+                          <p className="text-xs font-black text-neutral-800">QR Image Could Not Load</p>
+                          <p className="text-[10px] font-medium leading-snug">
+                            {qrConfig?.upiId
+                              ? 'Pay using the UPI ID below or ask Admin to re-upload the QR.'
+                              : 'Please ask Admin to re-upload the QR Scanner image.'}
+                          </p>
+                        </div>
+                      )}
                     </div>
                     <p className="text-[10px] font-bold text-neutral-500 mt-2.5 text-center">
                       FamPay • PhonePe • GPay • Navi • Any UPI App
@@ -510,11 +592,21 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
                     <input
                       type="text"
                       value={utrNumber}
-                      onChange={(e) => setUtrNumber(e.target.value)}
+                      onChange={(e) => {
+                        setModalError(null);
+                        setUtrNumber(e.target.value);
+                      }}
                       placeholder="e.g. 412345678901"
                       className="w-full bg-white border border-neutral-300 focus:border-orange-500 focus:ring-2 focus:ring-orange-500/20 rounded-xl px-3.5 py-3 text-sm font-bold text-neutral-900 outline-none"
                     />
                   </div>
+
+                  {modalError && (
+                    <div className="mb-3 bg-red-50 border border-red-200 rounded-xl p-2.5 flex items-start gap-2 text-red-700">
+                      <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                      <p className="text-[11px] font-bold leading-snug">{modalError}</p>
+                    </div>
+                  )}
 
                   <button
                     type="button"
@@ -565,11 +657,22 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
                 )}
               </h3>
 
-              <p className="text-xs text-neutral-600 leading-relaxed mb-6 font-medium">
+              <p className="text-xs text-neutral-600 leading-relaxed mb-5 font-medium">
                 {pollingTimedOut
                   ? 'Payment verification timed out. If your funds were deducted, please reach out to support with your Order ID.'
-                  : "We're confirming your transaction. Please do not close or refresh this page."}
+                  : "Complete payment on the gateway page and we'll confirm your transaction automatically."}
               </p>
+
+              {gatewayPaymentUrl && !pollingTimedOut && (
+                <a
+                  href={gatewayPaymentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full py-3.5 mb-4 bg-purple-600 hover:bg-purple-700 text-white rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition-colors shadow-md"
+                >
+                  Open Payment Page
+                </a>
+              )}
 
               {pollingOrderId && (
                 <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-2.5 mb-6 text-[11px] font-mono text-neutral-500">
@@ -581,6 +684,7 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
                 onClick={() => {
                   setPollingActive(false);
                   setPollingOrderId(null);
+                  setGatewayPaymentUrl(null);
                   setPollingTimedOut(false);
                 }}
                 className="w-full py-3 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-xl font-bold text-xs uppercase tracking-wider transition-colors"

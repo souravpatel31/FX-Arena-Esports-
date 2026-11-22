@@ -51,13 +51,13 @@ service cloud.firestore {
     function isValidInitialWallet(data) {
       return (!('wallet' in data) || (
                data.wallet is map &&
-               data.wallet.get('deposit', 0) is number && data.wallet.get('deposit', 0) >= 0 && data.wallet.get('deposit', 0) <= 500 &&
+               data.wallet.get('deposit', 0) is number && data.wallet.get('deposit', 0) == 0 &&
                data.wallet.get('winnings', 0) is number && data.wallet.get('winnings', 0) == 0 &&
-               data.wallet.get('bonus', 0) is number && data.wallet.get('bonus', 0) >= 0 && data.wallet.get('bonus', 0) <= 200
+               data.wallet.get('bonus', 0) is number && data.wallet.get('bonus', 0) == 0
              )) &&
-             (!('walletBalance' in data) || (data.walletBalance is number && data.walletBalance >= 0 && data.walletBalance <= 500)) &&
+             (!('walletBalance' in data) || (data.walletBalance is number && data.walletBalance == 0)) &&
              (!('winnings' in data) || (data.winnings is number && data.winnings == 0)) &&
-             (!('bonus' in data) || (data.bonus is number && data.bonus >= 0 && data.bonus <= 200));
+             (!('bonus' in data) || (data.bonus is number && data.bonus == 0));
     }
 
     function isValidUserCreate(data) {
@@ -80,9 +80,12 @@ service cloud.firestore {
       return !incomingData.diff(existingData).affectedKeys().hasAny(['wallet']) || (
         !('wallet' in existingData) ? (
           incomingData.wallet is map &&
-          incomingData.wallet.get('deposit', 0) is number && incomingData.wallet.get('deposit', 0) >= 0 && incomingData.wallet.get('deposit', 0) <= 500 &&
-          incomingData.wallet.get('winnings', 0) is number && incomingData.wallet.get('winnings', 0) == 0 &&
-          incomingData.wallet.get('bonus', 0) is number && incomingData.wallet.get('bonus', 0) >= 0 && incomingData.wallet.get('bonus', 0) <= 200
+          incomingData.wallet.get('deposit', 0) is number && incomingData.wallet.get('deposit', 0) >= 0 &&
+          incomingData.wallet.get('deposit', 0) <= existingData.get('walletBalance', 0) &&
+          incomingData.wallet.get('winnings', 0) is number && incomingData.wallet.get('winnings', 0) >= 0 &&
+          incomingData.wallet.get('winnings', 0) <= existingData.get('winnings', 0) &&
+          incomingData.wallet.get('bonus', 0) is number && incomingData.wallet.get('bonus', 0) >= 0 &&
+          incomingData.wallet.get('bonus', 0) <= existingData.get('bonus', 0)
         ) : (
           incomingData.wallet is map &&
           incomingData.wallet.get('deposit', 0) is number && incomingData.wallet.get('deposit', 0) >= 0 &&

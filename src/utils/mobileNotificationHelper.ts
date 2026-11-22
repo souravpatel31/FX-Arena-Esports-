@@ -1,5 +1,6 @@
 import { db } from '../lib/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
+import { APP_LOGO_URL, withBase } from './assetUrl';
 
 // Register Service Worker for Mobile Notifications
 export async function registerNotificationServiceWorker(): Promise<ServiceWorkerRegistration | null> {
@@ -8,8 +9,8 @@ export async function registerNotificationServiceWorker(): Promise<ServiceWorker
   }
 
   try {
-    const registration = await navigator.serviceWorker.register('/sw.js', {
-      scope: '/'
+    const registration = await navigator.serviceWorker.register(withBase('sw.js'), {
+      scope: import.meta.env.BASE_URL || '/'
     });
     return registration;
   } catch (err) {
@@ -91,8 +92,8 @@ export async function triggerMobileStatusBarNotification(
       if (reg && reg.showNotification) {
         await reg.showNotification(title, {
           body,
-          icon: options.icon || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
-          badge: options.badge || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
+          icon: options.icon || APP_LOGO_URL,
+          badge: options.badge || APP_LOGO_URL,
           vibrate: [250, 100, 250, 100, 250],
           tag: options.tag || `khel-galli-${Date.now()}`,
           renotify: true,
@@ -105,7 +106,7 @@ export async function triggerMobileStatusBarNotification(
     // Standard fallback if SW ready didn't resolve
     new Notification(title, {
       body,
-      icon: options.icon || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
+      icon: options.icon || APP_LOGO_URL,
       tag: options.tag || `khel-galli-${Date.now()}`
     });
   } catch (err) {

@@ -5,12 +5,13 @@ import {
   Image as ImageIcon, Loader2, Gamepad2, ArrowLeft, Upload, 
   Sparkles, Check, RefreshCw
 } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, getDocs, setDoc, doc, deleteDoc, onSnapshot, orderBy, writeBatch } from 'firebase/firestore';
 import { Page } from '../types';
 import { GAMES } from '../constants';
 import SafeImage from '../components/SafeImage';
 import { uploadOriginalImage } from '../utils/imageCompressor';
+import { isAuthorizedAdmin } from '../utils/adminAuth';
 
 export interface GameMode {
   id: string;
@@ -105,14 +106,21 @@ export default function AdminModes({ onPageChange }: AdminModesProps) {
         setUploadProgress(progress);
       });
       setEditingMode(prev => prev ? { ...prev, image: url } : null);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Mode image upload failed:', err);
+      alert(err?.message || 'Gallery upload failed, please try another image.');
     } finally {
       setIsUploading(false);
+      e.target.value = '';
     }
   };
 
   useEffect(() => {
+    if (!isAuthorizedAdmin(auth.currentUser)) {
+      onPageChange(Page.HOME);
+      return;
+    }
+
     setLoading(true);
     const q = query(collection(db, 'gameModes'), orderBy('order', 'asc'));
     

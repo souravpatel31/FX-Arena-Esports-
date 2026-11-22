@@ -45,7 +45,7 @@ service cloud.firestore {
              data.id is string && data.id.size() <= 100 &&
              data.gameId is string && data.gameId.size() <= 50 &&
              data.title is string && data.title.size() <= 100 &&
-             data.image is string && data.image.size() <= 2500;
+             data.image is string && data.image.size() <= 500000;
     }
 
     function isValidInitialWallet(data) {

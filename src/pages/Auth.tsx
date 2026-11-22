@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mail, Lock, Phone, User as UserIcon, Ticket, ArrowRight, Gamepad2, Chrome, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Mail, Lock, Phone, User as UserIcon, Ticket, ArrowRight, Gamepad2, Chrome, AlertCircle, CheckCircle2, Download } from 'lucide-react';
 import SafeImage from '../components/SafeImage';
+import { APP_LOGO_URL } from '../utils/assetUrl';
 import { auth, db } from '../lib/firebase';
 import { 
   signInWithPopup, 
@@ -43,6 +45,10 @@ export default function Auth({ onLogin }: AuthProps) {
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
+  const [referralInput, setReferralInput] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return new URLSearchParams(window.location.search).get('ref') || '';
+  });
   
   // Error State
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
@@ -182,7 +188,7 @@ export default function Auth({ onLogin }: AuthProps) {
             localStorage.setItem('khel_galli_device_id', deviceId);
           }
 
-          const referredBy = getReferrerFromUrl();
+          const referredBy = referralInput.trim().slice(0, 100) || getReferrerFromUrl();
 
           // Create Firestore Document with graceful failure
           try {
@@ -254,7 +260,7 @@ export default function Auth({ onLogin }: AuthProps) {
             className="mb-4"
           >
             <SafeImage 
-              src="/assets/aistudio/fx_arena_icon_512_8f7073a7.png" 
+              src={APP_LOGO_URL} 
               alt="FX Arena Logo" 
               className="w-24 h-24 rounded-2xl object-cover shadow-2xl border border-white/10"
             />
@@ -412,6 +418,16 @@ export default function Auth({ onLogin }: AuthProps) {
                     />
                     {errors.password && <span className="text-[8px] text-red-500 font-bold uppercase tracking-widest ml-1">{errors.password}</span>}
                   </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold uppercase tracking-widest text-neutral-500 ml-1">Referral Code (Optional)</label>
+                    <input
+                      type="text"
+                      value={referralInput}
+                      onChange={(e) => setReferralInput(e.target.value)}
+                      placeholder="Friend's username / code"
+                      className="w-full h-11 bg-neutral-800 rounded-lg px-4 text-xs text-white border border-neutral-700 focus:border-purple-500/50 transition-colors focus:outline-hidden"
+                    />
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -463,6 +479,18 @@ export default function Auth({ onLogin }: AuthProps) {
               {isLogin ? 'Register here' : 'Login here'}
             </button>
           </div>
+
+          {!isNativeApk && (
+            <div className="mt-5 pt-4 border-t border-white/5 text-center">
+              <Link
+                to="/download"
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-black uppercase tracking-wider text-purple-300 transition-all"
+              >
+                <Download size={13} />
+                <span>Download Android APK</span>
+              </Link>
+            </div>
+          )}
         </div>
       </div>
       

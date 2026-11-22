@@ -6,10 +6,11 @@ import {
   Clock, DollarSign, Trophy, Layers, ChevronDown, Image as ImageIcon, Upload, Trash2, CheckCircle2 
 } from 'lucide-react';
 import { Page, Tournament } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc, getDoc, updateDoc, serverTimestamp, getDocs, collection, query, orderBy } from 'firebase/firestore';
 import { GameMode } from './AdminModes';
 import { uploadOriginalImage } from '../utils/imageCompressor';
+import { isAuthorizedAdmin } from '../utils/adminAuth';
 
 interface AdminEditMatchProps {
   onPageChange: (page: Page) => void;
@@ -116,6 +117,11 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
   }, [matchForm.gameId]);
 
   useEffect(() => {
+    if (!isAuthorizedAdmin(auth.currentUser)) {
+      onPageChange(Page.HOME);
+      return;
+    }
+
     if (!matchId) {
       onPageChange(Page.ADMIN);
       return;
@@ -176,10 +182,12 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
         setUploadProgress(progress);
       });
       setMatchForm(prev => ({ ...prev, image: uploadedUrl }));
-    } catch (err) {
+    } catch (err: any) {
       console.error('Image upload failed:', err);
+      alert(err?.message || 'Gallery upload failed, please try another image.');
     } finally {
       setIsUploadingImage(false);
+      e.target.value = '';
     }
   };
 

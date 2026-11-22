@@ -9,6 +9,7 @@ import {
   requestMobileNotificationPermission, 
   triggerMobileStatusBarNotification 
 } from '../utils/mobileNotificationHelper';
+import { APP_LOGO_URL } from '../utils/assetUrl';
 
 interface GlobalNotificationListenerProps {
   user?: User | null;
@@ -160,8 +161,8 @@ export default function GlobalNotificationListener({
               tag: data.id || 'khel-galli-alert',
               targetMatchId: data.targetMatchId,
               actionPage: data.actionPage,
-              icon: '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
-              badge: '/assets/aistudio/fx_arena_icon_512_8f7073a7.png'
+              icon: APP_LOGO_URL,
+              badge: APP_LOGO_URL
             });
 
             // Auto dismiss in-app popup after 6.5s

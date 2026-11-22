@@ -3,6 +3,7 @@ import { Coins, Bell } from 'lucide-react';
 import { Page, User } from '../types';
 import { db } from '../lib/firebase';
 import { collection, onSnapshot, query, limit } from 'firebase/firestore';
+import { APP_LOGO_URL } from '../utils/assetUrl';
 
 interface HomeHeaderProps {
   user: User;
@@ -48,7 +49,7 @@ export default function HomeHeader({ user, onPageChange, onOpenNotifications }: 
         >
           <div className="w-11 h-11 rounded-full bg-gradient-to-b from-[#162238] to-[#0a1220] p-0.5 border border-[#223963] shadow-lg flex items-center justify-center overflow-hidden">
             <img
-              src="/assets/aistudio/fx_arena_icon_512_8f7073a7.png"
+              src={APP_LOGO_URL}
               alt="FX Arena"
               className="w-full h-full rounded-full object-cover"
             />

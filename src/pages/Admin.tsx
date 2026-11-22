@@ -232,14 +232,15 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
       const downloadURL = await uploadOriginalImage(file, (progress) => {
         setUploadProgress(progress);
       });
-      console.log("Uploaded successfully at 100% original quality:", downloadURL);
+      console.log("Uploaded successfully:", downloadURL.slice(0, 80));
       setImageUrl(downloadURL);
       setUploadProgress(100);
     } catch (error: any) {
       console.error('Upload Process Error:', error);
-      alert('Upload failed, try again');
+      alert(error?.message || 'Gallery upload failed, please try another image.');
     } finally {
       setIsUploading(false);
+      e.target.value = '';
     }
   };
 
@@ -967,11 +968,15 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   };
 
   const handleSaveBanner = async () => {
-    if (!imageUrl) return alert('Image URL is required');
+    if (!imageUrl) return alert('Banner image is required');
     setIsProcessing(true);
     try {
+      const safeImageUrl = imageUrl.startsWith('data:')
+        ? await import('../utils/imageCompressor').then((m) => m.compactImageForFirestore(imageUrl, 420000))
+        : imageUrl.trim();
+
       const bannerData = {
-        imageUrl,
+        imageUrl: safeImageUrl,
         redirectUrl: (bannerType === 'main' || bannerType === 'offer') ? redirectUrl : '',
         type: bannerType,
         order: Number(bannerOrder),
@@ -991,8 +996,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
       setEditingBanner(null);
       setImageUrl('');
       setRedirectUrl('');
-    } catch (e) {
+    } catch (e: any) {
       handleFirestoreError(e, OperationType.WRITE, 'banners');
+      alert(e?.message || 'Could not save banner. Please try a smaller image.');
     } finally {
       setIsProcessing(false);
     }
@@ -2296,6 +2302,20 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                   </div>
 
                   <div className="space-y-2">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">APK Download Link (Shared in Mobile App)</label>
+                    <input 
+                      type="text"
+                      placeholder="https://github.com/.../releases/latest/download/FX-Arena-Esports.apk"
+                      value={appSettings?.referral?.apkDownloadUrl || ''}
+                      onChange={(e) => setAppSettings({
+                        ...appSettings,
+                        referral: { ...appSettings?.referral, apkDownloadUrl: e.target.value }
+                      })}
+                      className="w-full bg-black border border-neutral-800 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-purple-500"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
                     <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">Per Referral Reward (₹)</label>
                     <input 
                       type="number"
@@ -3195,6 +3215,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                       />
                       <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all z-20">
                         <button 
+                          type="button"
                           onClick={() => fileInputRef.current?.click()}
                           className="px-4 py-2 bg-white text-black text-[10px] font-black uppercase rounded-lg shadow-xl active:scale-95 transition-all"
                         >
@@ -3204,6 +3225,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     </div>
                   ) : (
                     <button 
+                      type="button"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={isUploading}
                       className="w-full aspect-video rounded-3xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center gap-3 hover:border-purple-500/50 hover:bg-neutral-900/50 transition-all group"

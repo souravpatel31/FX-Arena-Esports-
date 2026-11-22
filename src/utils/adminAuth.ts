@@ -1,0 +1,17 @@
+export const ADMIN_EMAILS = [
+  'souravpatel312@gmail.com',
+  'qupagaming@gmail.com',
+  'mahendrathakur9009@gmail.com',
+  'mahendrar9009@gmail.com',
+];
+
+export const ADMIN_UIDS = ['XoXyXcnrlzOaMIKKolXnU3mT9xn1'];
+
+export function isAuthorizedAdmin(
+  account?: { email?: string | null; id?: string; uid?: string } | null
+): boolean {
+  if (!account) return false;
+  const email = (account.email || '').toLowerCase().trim();
+  const uid = account.id || account.uid || '';
+  return ADMIN_EMAILS.includes(email) || ADMIN_UIDS.includes(uid);
+}

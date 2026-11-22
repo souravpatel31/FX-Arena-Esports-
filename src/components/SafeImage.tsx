@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Loader2, Gamepad2 } from 'lucide-react';
+import { APP_LOGO_URL } from '../utils/assetUrl';
 
 interface SafeImageProps {
   src?: string;
@@ -12,7 +13,7 @@ interface SafeImageProps {
   showLoader?: boolean;
 }
 
-const APP_LOGO = "/assets/aistudio/fx_arena_icon_512_8f7073a7.png";
+const APP_LOGO = APP_LOGO_URL;
 
 export default function SafeImage({ 
   src, 

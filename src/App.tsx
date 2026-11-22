@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Routes, Route, useNavigate, useLocation, Navigate, useParams } from 'react-router-dom';
+import { Capacitor } from '@capacitor/core';
 import { Page, User } from './types';
 import Header from './components/Header';
 import BottomNav from './components/BottomNav';
@@ -8,6 +9,8 @@ import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs, writeBatch, onSnapshot, increment, updateDoc } from 'firebase/firestore';
 import { GAMES } from './constants';
+import { isAuthorizedAdmin } from './utils/adminAuth';
+import { WELCOME_SPLASH_URL } from './utils/assetUrl';
 
 // Pages
 import Auth from './pages/Auth';
@@ -29,6 +32,7 @@ import GameModes from './pages/GameModes';
 import AdminModes from './pages/AdminModes';
 import Leaderboard from './pages/Leaderboard';
 import MatchDetails from './pages/MatchDetails';
+import DownloadApp from './pages/DownloadApp';
 import GlobalNotificationListener from './components/GlobalNotificationListener';
 
 const DEFAULT_USER_DATA = {
@@ -124,9 +128,13 @@ export default function App() {
     }, 3000);
   };
 
+  const isNativeApk = Capacitor.isNativePlatform();
+  const pathnameRef = React.useRef(location.pathname);
+  pathnameRef.current = location.pathname;
+
   useEffect(() => {
     const preloadImg = new Image();
-    preloadImg.src = '/assets/aistudio/fx-welcome_31ecf10b.png';
+    preloadImg.src = WELCOME_SPLASH_URL;
     splashTimerRef.current = window.setTimeout(() => {
       setShowWelcomeSplash(false);
       splashTimerRef.current = null;
@@ -142,8 +150,7 @@ export default function App() {
     let unsubscribeUser: (() => void) | null = null;
 
     const seedDatabase = async (email: string, uid: string) => {
-      const admins = ["souravpatel312@gmail.com", "qupagaming@gmail.com", "mahendrathakur9009@gmail.com", "mahendrar9009@gmail.com"];
-      if (!admins.includes(email.toLowerCase()) && uid !== "XoXyXcnrlzOaMIKKolXnU3mT9xn1") return;
+      if (!isAuthorizedAdmin({ email, uid })) return;
       try {
         // Independence seeding for games
         const gamesSnap = await getDocs(collection(db, 'games'));
@@ -208,12 +215,24 @@ export default function App() {
           console.log('Game rules seeded');
         }
 
-        // Seeding app settings
+        // Seeding app settings (avoid saving localhost/internal preview origins)
+        const isInternalOrigin = (u: string) =>
+          !u ||
+          u.includes('localhost') ||
+          u.includes('127.0.0.1') ||
+          u.includes('ais-dev') ||
+          u.includes('ais-pre') ||
+          u.includes('secret-scanner-g7cvm.web.app');
+        const envSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
+        const envApkUrl = (import.meta.env.VITE_APK_DOWNLOAD_URL || '').trim();
+        const safeBaseUrl = envSiteUrl || (!isInternalOrigin(window.location.origin) ? window.location.origin : '');
+
         const settingsSnap = await getDoc(doc(db, 'appSettings', 'referral_support'));
         if (!settingsSnap.exists()) {
           await setDoc(doc(db, 'appSettings', 'referral_support'), {
             referral: {
-              baseUrl: window.location.origin,
+              baseUrl: safeBaseUrl,
+              apkDownloadUrl: envApkUrl,
               perReferralReward: 3,
               rewardType: 'bonus',
               depositPercentage: 50,
@@ -229,15 +248,24 @@ export default function App() {
           console.log('App settings seeded');
         } else {
           const existingRef = settingsSnap.data()?.referral;
-          if (existingRef && (existingRef.perReferralReward === 50 || existingRef.newUserReward === 10)) {
-            await setDoc(doc(db, 'appSettings', 'referral_support'), {
-              referral: {
-                ...existingRef,
-                perReferralReward: existingRef.perReferralReward === 50 ? 3 : existingRef.perReferralReward,
-                newUserReward: existingRef.newUserReward === 10 ? 2 : existingRef.newUserReward
-              }
-            }, { merge: true });
-            console.log('Default referral rewards updated to 3/2');
+          if (existingRef) {
+            const updates: Record<string, any> = {};
+            if (existingRef.perReferralReward === 50) updates.perReferralReward = 3;
+            if (existingRef.newUserReward === 10) updates.newUserReward = 2;
+            if (isInternalOrigin(existingRef.baseUrl || '') && safeBaseUrl) {
+              updates.baseUrl = safeBaseUrl;
+            }
+            if (!existingRef.apkDownloadUrl && envApkUrl) {
+              updates.apkDownloadUrl = envApkUrl;
+            }
+            if (Object.keys(updates).length > 0) {
+              await setDoc(doc(db, 'appSettings', 'referral_support'), {
+                referral: {
+                  ...existingRef,
+                  ...updates
+                }
+              }, { merge: true });
+            }
           }
         }
 
@@ -305,12 +333,7 @@ export default function App() {
             }
 
             const normalizedEmail = (firebaseUser.email || '').toLowerCase();
-            const shouldBeAdmin =
-              normalizedEmail === 'souravpatel312@gmail.com' ||
-              normalizedEmail === 'mahendrathakur9009@gmail.com' ||
-              normalizedEmail === 'mahendrar9009@gmail.com' ||
-              normalizedEmail === 'qupagaming@gmail.com' ||
-              firebaseUser.uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1';
+            const shouldBeAdmin = isAuthorizedAdmin({ email: normalizedEmail, uid: firebaseUser.uid });
 
             if (shouldBeAdmin && !data.isAdmin) {
               try {
@@ -325,7 +348,7 @@ export default function App() {
               }
             }
 
-            setUser({ id: userDoc.id, ...data, isAdmin: Boolean(data.isAdmin || shouldBeAdmin) } as User);
+            setUser({ id: userDoc.id, ...data, isAdmin: Boolean(shouldBeAdmin) } as User);
             setIsLoggedIn(true);
             setLoading(false);
 
@@ -334,19 +357,14 @@ export default function App() {
               processReferralReward(data, firebaseUser.uid);
             }
             
-            // Immediate redirect to home if on login/signup pages
-            if (location.pathname === '/login' || location.pathname === '/signup' || location.pathname === '/') {
-              console.log("Redirecting to home...");
+            // Immediate redirect to home if on login/signup/root pages
+            if (['/login', '/signup', '/'].includes(pathnameRef.current)) {
               navigate('/home');
             }
           } else {
             // For Google Auth or unexpected cases, create default profile
             const normalizedEmail = (firebaseUser.email || '').toLowerCase();
-            const isAdmin = normalizedEmail === 'souravpatel312@gmail.com' ||
-                           normalizedEmail === 'mahendrathakur9009@gmail.com' || 
-                           normalizedEmail === 'mahendrar9009@gmail.com' || 
-                           normalizedEmail === 'qupagaming@gmail.com' ||
-                           firebaseUser.uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1';
+            const isAdmin = isAuthorizedAdmin({ email: normalizedEmail, uid: firebaseUser.uid });
             const newUser: User = {
               username: (firebaseUser.displayName || `Gamer_${firebaseUser.uid.slice(0, 5)}`).slice(0, 100),
               email: (firebaseUser.email || '').slice(0, 200),
@@ -389,8 +407,11 @@ export default function App() {
         setIsLoggedIn(false);
         setUser(null);
         setJoinedMatchIds([]);
-        if (!['/login', '/signup'].includes(location.pathname)) {
-          navigate('/login');
+        const publicPaths = isNativeApk
+          ? ['/login', '/signup']
+          : ['/', '/download', '/login', '/signup'];
+        if (!publicPaths.includes(pathnameRef.current)) {
+          navigate(isNativeApk ? '/login' : '/');
         }
         setLoading(false);
       }
@@ -403,7 +424,9 @@ export default function App() {
   }, []);
 
   const handleLogin = () => {
-    triggerWelcomeSplash();
+    if (!showWelcomeSplash) {
+      triggerWelcomeSplash();
+    }
     console.log("Redirecting to home...");
     navigate('/home');
   };
@@ -537,7 +560,7 @@ export default function App() {
         >
           <div className="relative w-full max-w-lg h-full flex items-center justify-center">
             <img
-              src="/assets/aistudio/fx-welcome_31ecf10b.png"
+              src={WELCOME_SPLASH_URL}
               alt="Welcome to FX Arena Esports"
               className="w-full h-full object-contain"
             />
@@ -554,15 +577,15 @@ export default function App() {
     </AnimatePresence>
   );
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center">
-        <div className="w-12 h-12 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
-        <p className="mt-4 text-xs font-black uppercase tracking-widest text-neutral-500">Initializing...</p>
-        {renderWelcomeSplash()}
-      </div>
-    );
-  }
+  const renderMainContent = () => {
+    if (loading) {
+      return (
+        <div className="min-h-screen bg-background flex flex-col items-center justify-center">
+          <div className="w-12 h-12 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
+          <p className="mt-4 text-xs font-black uppercase tracking-widest text-neutral-500">Initializing...</p>
+        </div>
+      );
+    }
 
   // Derive currentPage for components that still need it
   const currentPath = location.pathname;
@@ -590,8 +613,27 @@ export default function App() {
     return <>{children}</>;
   };
 
+  // Strict Admin route wrapper — completely blocks regular users from accessing any Admin UI
+  const AdminRoute = ({ children }: { children: React.ReactNode }) => {
+    if (!isLoggedIn && !loading) {
+      return <Navigate to="/login" replace />;
+    }
+    if (!user && isLoggedIn) {
+      return (
+        <div className="flex flex-col items-center justify-center pt-24">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Verifying access...</p>
+        </div>
+      );
+    }
+    if (!isAuthorizedAdmin(user) || !isAuthorizedAdmin(auth.currentUser)) {
+      return <Navigate to="/home" replace />;
+    }
+    return <>{children}</>;
+  };
+
   // Pages that display header/nav
-  const showChrome = isLoggedIn && !['/login', '/signup'].includes(location.pathname);
+  const showChrome = isLoggedIn && !['/login', '/signup', '/download'].includes(location.pathname);
   const showHeader = showChrome && !['/home', '/tournaments', '/match/', '/match-details/', '/wallet/add', '/wallet/withdraw', '/admin', '/referral', '/profile/details', '/profile/stats', '/game-modes', '/profile'].some(p => location.pathname.startsWith(p));
   const showNav = showChrome && !['/match/', '/match-details/', '/admin/match/'].some(p => location.pathname.startsWith(p));
 
@@ -608,7 +650,7 @@ export default function App() {
       <main className="mx-auto max-w-lg min-h-screen bg-background overflow-x-hidden">
         <AnimatePresence mode="wait">
           <motion.div
-            key={location.pathname.split('/')[1]} // Transition based on base path
+            key={location.pathname.split('/')[1] || 'public'} // Transition based on base path
             initial={{ opacity: 0, x: 10 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -10 }}
@@ -616,7 +658,19 @@ export default function App() {
             className="w-full"
           >
             <Routes location={location}>
-              <Route path="/" element={<Navigate to="/home" replace />} />
+              <Route
+                path="/"
+                element={
+                  isLoggedIn ? (
+                    <Navigate to="/home" replace />
+                  ) : isNativeApk ? (
+                    <Navigate to="/login" replace />
+                  ) : (
+                    <DownloadApp isLoggedIn={false} />
+                  )
+                }
+              />
+              <Route path="/download" element={<DownloadApp isLoggedIn={isLoggedIn} />} />
               <Route path="/login" element={<Auth onLogin={handleLogin} />} />
               <Route path="/signup" element={<Auth onLogin={handleLogin} />} />
               
@@ -708,39 +762,39 @@ export default function App() {
               } />
 
               <Route path="/admin" element={
-                <ProtectedRoute>
+                <AdminRoute>
                   <AdminPage onPageChange={handlePageChange} />
-                </ProtectedRoute>
+                </AdminRoute>
               } />
 
               <Route path="/admin/user/:id" element={
-                <ProtectedRoute>
+                <AdminRoute>
                   <AdminUserDetail onPageChange={handlePageChange} />
-                </ProtectedRoute>
+                </AdminRoute>
               } />
 
               <Route path="/admin/match/edit/:id" element={
-                <ProtectedRoute>
+                <AdminRoute>
                   <AdminEditMatch onPageChange={handlePageChange} />
-                </ProtectedRoute>
+                </AdminRoute>
               } />
 
               <Route path="/admin/match/create" element={
-                <ProtectedRoute>
+                <AdminRoute>
                   <AdminCreateMatch onPageChange={handlePageChange} />
-                </ProtectedRoute>
+                </AdminRoute>
               } />
 
               <Route path="/admin/match/create/:duplicateId" element={
-                <ProtectedRoute>
+                <AdminRoute>
                   <AdminCreateMatch onPageChange={handlePageChange} />
-                </ProtectedRoute>
+                </AdminRoute>
               } />
 
               <Route path="/admin/modes" element={
-                <ProtectedRoute>
+                <AdminRoute>
                   <AdminModes onPageChange={handlePageChange} />
-                </ProtectedRoute>
+                </AdminRoute>
               } />
 
               <Route path="/leaderboard" element={
@@ -749,7 +803,7 @@ export default function App() {
                 </ProtectedRoute>
               } />
 
-              <Route path="*" element={<Navigate to="/home" replace />} />
+              <Route path="*" element={<Navigate to={isLoggedIn ? "/home" : (isNativeApk ? "/login" : "/")} replace />} />
             </Routes>
           </motion.div>
         </AnimatePresence>
@@ -763,14 +817,20 @@ export default function App() {
         />
       )}
       
-      {/* Global Background Glow */}
-      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-lg h-full pointer-events-none -z-10 overflow-hidden">
-        <div className="absolute top-[-10%] left-[-20%] w-[80%] h-[40%] bg-primary/10 blur-[120px] rounded-full" />
-        <div className="absolute bottom-[-10%] right-[-20%] w-[80%] h-[40%] bg-secondary/10 blur-[120px] rounded-full" />
+        {/* Global Background Glow */}
+        <div className="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-lg h-full pointer-events-none -z-10 overflow-hidden">
+          <div className="absolute top-[-10%] left-[-20%] w-[80%] h-[40%] bg-primary/10 blur-[120px] rounded-full" />
+          <div className="absolute bottom-[-10%] right-[-20%] w-[80%] h-[40%] bg-secondary/10 blur-[120px] rounded-full" />
+        </div>
       </div>
+    );
+  };
 
-      {/* 3-Second Welcome Splash (Shows on App Open & After Login) */}
+  return (
+    <>
+      {renderMainContent()}
+      {/* 3-Second Welcome Splash (Rendered once across loading & active views) */}
       {renderWelcomeSplash()}
-    </div>
+    </>
   );
 }

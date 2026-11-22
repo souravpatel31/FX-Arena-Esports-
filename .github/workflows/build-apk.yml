@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build-apk:
@@ -33,7 +35,27 @@ jobs:
       - name: Install Dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Build Web Assets
+      - name: Configure Public Web & APK Release URLs
+        run: |
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          APK_URL="https://github.com/${{ github.repository }}/releases/latest/download/FX-Arena-Esports.apk"
+
+          if [ "$REPO_NAME" = "${REPO_OWNER}.github.io" ]; then
+            PAGES_BASE_PATH="/"
+            PUBLIC_SITE_URL="https://${REPO_OWNER}.github.io"
+          else
+            PAGES_BASE_PATH="/${REPO_NAME}/"
+            PUBLIC_SITE_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}"
+          fi
+
+          {
+            echo "VITE_APK_DOWNLOAD_URL=${APK_URL}"
+            echo "VITE_PUBLIC_SITE_URL=${PUBLIC_SITE_URL}"
+            echo "PAGES_BASE_PATH=${PAGES_BASE_PATH}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Web Assets for APK
         run: npm run build
 
       - name: Create Capacitor Android Project
@@ -83,18 +105,15 @@ jobs:
               round_img.paste(resized, (0, 0), mask)
               round_img.save(os.path.join(out_dir, "ic_launcher_round.png"), "PNG")
 
-          # Replace Capacitor default splash screens with FX Arena Esports welcome artwork
-          splash_src_path = "public/assets/aistudio/fx-welcome_31ecf10b.png"
-          splash_src = Image.open(splash_src_path).convert("RGBA") if os.path.exists(splash_src_path) else base_img
+          # Set Android OS native launch splash to centered Eagle logo on dark canvas so the 3s welcome poster only plays once inside the app
           for splash_file in glob.glob(os.path.join(res_dir, "drawable*", "splash.png")):
               w, h = Image.open(splash_file).size
               canvas = Image.new("RGBA", (w, h), (5, 5, 8, 255))
-              scale = min(w / splash_src.width, h / splash_src.height)
-              nw, nh = max(1, int(splash_src.width * scale)), max(1, int(splash_src.height * scale))
-              fitted = splash_src.resize((nw, nh), Image.LANCZOS)
-              canvas.paste(fitted, ((w - nw) // 2, (h - nh) // 2), fitted)
+              icon_size = max(96, int(min(w, h) * 0.34))
+              fitted = base_img.resize((icon_size, icon_size), Image.LANCZOS)
+              canvas.paste(fitted, ((w - icon_size) // 2, (h - icon_size) // 2), fitted)
               canvas.save(splash_file, "PNG")
-          print("Applied FX Arena Esports launcher icons and splash screens successfully.")
+          print("Applied FX Arena Esports launcher icons and native splash logo successfully.")
           EOF
 
       - name: Configure Release SDK & Versioning
@@ -191,3 +210,77 @@ jobs:
           body: Official signed Release Android APK for FX Arena Esports. Uninstall any older version before installing FX-Arena-Esports.apk on your Android phone.
           files: FX-Arena-Esports.apk
           make_latest: true
+
+      - name: Build Public Download Website (GitHub Pages)
+        run: |
+          rm -rf dist
+          VITE_BASE_PATH="$PAGES_BASE_PATH" npm run build
+          cp dist/index.html dist/404.html
+          python3 - << 'EOF'
+          import os, json, textwrap
+
+          site_url = os.environ["VITE_PUBLIC_SITE_URL"].rstrip("/")
+          base_path = os.environ["PAGES_BASE_PATH"]
+
+          with open("dist/sitemap.xml", "w") as f:
+              f.write(textwrap.dedent(f"""\
+              <?xml version="1.0" encoding="UTF-8"?>
+              <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                <url>
+                  <loc>{site_url}/</loc>
+                  <changefreq>weekly</changefreq>
+                  <priority>1.0</priority>
+                </url>
+                <url>
+                  <loc>{site_url}/download</loc>
+                  <changefreq>weekly</changefreq>
+                  <priority>0.9</priority>
+                </url>
+              </urlset>
+              """))
+
+          with open("dist/robots.txt", "w") as f:
+              f.write(textwrap.dedent(f"""\
+              User-agent: *
+              Allow: {base_path}
+              Allow: {base_path}download
+              Disallow: {base_path}admin
+              Disallow: {base_path}admin/
+              Disallow: {base_path}wallet
+              Disallow: {base_path}profile
+
+              Sitemap: {site_url}/sitemap.xml
+              """))
+
+          manifest_path = "dist/manifest.json"
+          if os.path.exists(manifest_path):
+              with open(manifest_path, "r") as f:
+                  manifest = json.load(f)
+              manifest["id"] = base_path
+              manifest["start_url"] = base_path
+              manifest["scope"] = base_path
+              for icon in manifest.get("icons", []):
+                  src = icon.get("src", "").lstrip("/")
+                  if src:
+                      icon["src"] = f"{base_path}{src}"
+              with open(manifest_path, "w") as f:
+                  json.dump(manifest, f, indent=2)
+          EOF
+
+      - name: Upload GitHub Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy-pages:
+    name: Deploy Public Website (GitHub Pages)
+    needs: build-apk
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

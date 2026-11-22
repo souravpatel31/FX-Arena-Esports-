@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, Users, Gift, Share2, Copy, CheckCircle2, ChevronRight, Award, Trophy } from 'lucide-react';
+import { ArrowLeft, Users, Gift, Share2, Copy, CheckCircle2, Award, Trophy } from 'lucide-react';
+import { Share } from '@capacitor/share';
+import { Capacitor } from '@capacitor/core';
 import { Page, User } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db } from '../lib/firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
 
 interface ReferralPageProps {
@@ -12,6 +14,7 @@ interface ReferralPageProps {
 
 export default function ReferralPage({ user, onPageChange }: ReferralPageProps) {
   const [copied, setCopied] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
   const [appSettings, setAppSettings] = useState<any>(null);
 
   useEffect(() => {
@@ -24,13 +27,54 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
   }, []);
 
   const referralCode = user.username;
-  const baseUrl = appSettings?.referral?.baseUrl?.replace(/\/$/, '') || window.location.origin;
-  const referralLink = `${baseUrl}/signup?ref=${referralCode}`;
+  const envApkUrl = (import.meta.env.VITE_APK_DOWNLOAD_URL || '').trim();
+  const envSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
+  const rawApkUrl = appSettings?.referral?.apkDownloadUrl?.trim() || '';
+  const rawBaseUrl = appSettings?.referral?.baseUrl?.replace(/\/$/, '').trim() || '';
+  const isInternalHost = (url: string) =>
+    !url ||
+    url.includes('localhost') ||
+    url.includes('127.0.0.1') ||
+    url.includes('ais-dev') ||
+    url.includes('ais-pre') ||
+    url.includes('secret-scanner-g7cvm.web.app');
 
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text);
+  const resolvedApkUrl = !isInternalHost(rawApkUrl) ? rawApkUrl : envApkUrl;
+  const resolvedBaseUrl = !isInternalHost(rawBaseUrl) ? rawBaseUrl : envSiteUrl;
+
+  const publicShareUrl =
+    resolvedApkUrl || (resolvedBaseUrl ? `${resolvedBaseUrl}/signup?ref=${encodeURIComponent(referralCode)}` : '');
+  const shareText = publicShareUrl
+    ? `Join FX Arena Esports & win daily Free Fire tournament rewards! Download the app & register with my Referral Code: ${referralCode} to get ₹${
+        appSettings?.referral?.newUserReward === undefined || appSettings?.referral?.newUserReward === 10
+          ? 2
+          : appSettings?.referral?.newUserReward
+      } bonus!`
+    : `Join FX Arena Esports & win daily Free Fire tournament rewards! Register inside the app using my Referral Code: ${referralCode} to get ₹${
+        appSettings?.referral?.newUserReward === undefined || appSettings?.referral?.newUserReward === 10
+          ? 2
+          : appSettings?.referral?.newUserReward
+      } bonus!`;
+
+  const handleCopy = async (text: string, feedbackMsg = 'Copied to clipboard!') => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setShareFeedback(feedbackMsg);
+    setTimeout(() => {
+      setCopied(false);
+      setShareFeedback(null);
+    }, 2500);
   };
 
   const rawRefReward = appSettings?.referral?.perReferralReward;
@@ -40,23 +84,37 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
   const newUserReward = rawNewUserReward === undefined || rawNewUserReward === 10 ? 2 : rawNewUserReward;
 
   const handleShare = async () => {
+    const fullCopyPayload = publicShareUrl ? `${shareText}\n${publicShareUrl}` : shareText;
+
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await Share.share({
+          title: 'FX Arena Esports – Invite & Earn',
+          text: shareText,
+          ...(publicShareUrl ? { url: publicShareUrl } : {}),
+          dialogTitle: 'Share FX Arena Esports',
+        });
+        return;
+      } catch (err: any) {
+        const msg = String(err?.message || '').toLowerCase();
+        if (msg.includes('cancel') || err?.name === 'AbortError') return;
+      }
+    }
+
     if (navigator.share) {
       try {
         await navigator.share({
           title: 'FX Arena Esports Referral',
-          text: `Join FX Arena Esports using my referral code ${referralCode} and get ₹${newUserReward} bonus!`,
-          url: referralLink,
+          text: shareText,
+          ...(publicShareUrl ? { url: publicShareUrl } : {}),
         });
+        return;
       } catch (err: any) {
-        // If user canceled (AbortError) or it's blocked by iframe, fallback to copy
-        if (err.name !== 'AbortError') {
-          console.log('Share API failed or blocked, falling back to copy');
-          handleCopy(referralLink);
-        }
+        if (err?.name === 'AbortError') return;
       }
-    } else {
-      handleCopy(referralLink);
     }
+
+    await handleCopy(fullCopyPayload, 'Invite message & code copied!');
   };
 
   return (
@@ -140,11 +198,17 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
         {/* Share Button */}
         <button 
            onClick={handleShare}
-           className="w-full py-5 bg-white text-black rounded-3xl text-sm font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-xl shadow-white/5 active:scale-95 transition-all mb-8"
+           className="w-full py-5 bg-white text-black rounded-3xl text-sm font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-xl shadow-white/5 active:scale-95 transition-all mb-4"
         >
            <Share2 size={20} />
-           Share Referral link
+           Share App &amp; Referral
         </button>
+
+        {shareFeedback && (
+          <div className="mb-6 py-2.5 px-4 bg-emerald-500/15 border border-emerald-500/30 rounded-2xl text-center text-[11px] font-black uppercase tracking-wider text-emerald-400">
+            {shareFeedback}
+          </div>
+        )}
 
         {/* Info Card */}
         <div className="p-6 bg-neutral-900 border border-neutral-800 rounded-3xl border-dashed">

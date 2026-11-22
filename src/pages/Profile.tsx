@@ -19,6 +19,8 @@ import { Page, User } from '../types';
 import SupportModal from '../components/SupportModal';
 import RulesModal from '../components/RulesModal';
 import MyOrdersModal from '../components/MyOrdersModal';
+import { isAuthorizedAdmin } from '../utils/adminAuth';
+import { APP_LOGO_URL } from '../utils/assetUrl';
 
 interface ProfilePageProps {
   user: User;
@@ -43,11 +45,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
     });
   };
 
-  const isAdminUser =
-    user?.isAdmin ||
-    ['souravpatel312@gmail.com', 'mahendrathakur9009@gmail.com', 'mahendrar9009@gmail.com', 'qupagaming@gmail.com'].includes(
-      (user?.email || '').toLowerCase()
-    );
+  const isAdminUser = isAuthorizedAdmin(user);
 
   const totalBalance =
     (user?.wallet?.deposit || 0) + (user?.wallet?.winnings || 0) + (user?.wallet?.bonus || 0);
@@ -69,7 +67,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
           >
             <div className="w-11 h-11 rounded-full bg-gradient-to-b from-[#1b2b48] to-[#0a1220] p-0.5 border border-[#2b4475] shadow-lg flex items-center justify-center overflow-hidden">
               <img
-                src="/assets/aistudio/fx_arena_icon_512_8f7073a7.png"
+                src={APP_LOGO_URL}
                 alt="FX Arena"
                 className="w-full h-full rounded-full object-cover"
               />
@@ -112,7 +110,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
             className="w-28 h-28 sm:w-32 sm:h-32 rounded-full p-1 bg-gradient-to-b from-[#1b2b4a] via-[#101a2f] to-[#060c18] border-2 border-white shadow-xl flex items-center justify-center overflow-hidden relative group"
           >
             <img
-              src="/assets/aistudio/fx_arena_icon_512_8f7073a7.png"
+              src={APP_LOGO_URL}
               alt="FX Arena Esports"
               className="w-full h-full rounded-full object-cover relative z-10"
             />

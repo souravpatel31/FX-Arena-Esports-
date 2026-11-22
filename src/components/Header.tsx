@@ -1,6 +1,7 @@
 import { Wallet, Bell, Search } from 'lucide-react';
 import { Page, User } from '../types';
 import SafeImage from './SafeImage';
+import { APP_LOGO_URL } from '../utils/assetUrl';
 
 interface HeaderProps {
   user: User;
@@ -17,7 +18,7 @@ export default function Header({ user, onPageChange }: HeaderProps) {
             className="w-12 h-12 rounded-2xl overflow-hidden shadow-2xl shadow-purple-500/10 cursor-pointer border border-white/10"
           >
             <SafeImage 
-              src="/assets/aistudio/fx_arena_icon_512_8f7073a7.png" 
+              src={APP_LOGO_URL} 
               alt="FX Arena Logo" 
               className="w-full h-full object-cover"
             />

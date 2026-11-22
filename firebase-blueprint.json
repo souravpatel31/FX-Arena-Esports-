@@ -112,7 +112,7 @@
       "properties": {
         "gameId": { "type": "string", "maxLength": 64 },
         "title": { "type": "string", "maxLength": 200 },
-        "image": { "type": "string", "maxLength": 2500 },
+        "image": { "type": "string", "maxLength": 500000 },
         "entryFee": { "type": "number" },
         "prizePool": { "type": "number" },
         "perKill": { "type": "number" },
@@ -168,7 +168,7 @@
         "gameId": { "type": "string", "maxLength": 50 },
         "title": { "type": "string", "maxLength": 100 },
         "subtitle": { "type": "string", "maxLength": 200 },
-        "image": { "type": "string", "maxLength": 2500 },
+        "image": { "type": "string", "maxLength": 500000 },
         "category": { "type": "string", "maxLength": 100 },
         "order": { "type": "number" }
       },
@@ -180,7 +180,7 @@
       "type": "object",
       "properties": {
         "title": { "type": "string", "maxLength": 150 },
-        "imageUrl": { "type": "string", "maxLength": 2500 },
+        "imageUrl": { "type": "string", "maxLength": 500000 },
         "actionUrl": { "type": "string", "maxLength": 500 },
         "order": { "type": "number" },
         "isActive": { "type": "boolean" }

@@ -7,10 +7,11 @@ import {
   Image as ImageIcon, Upload, Trash2, CheckCircle2, RefreshCw
 } from 'lucide-react';
 import { Page, Tournament } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, doc, getDoc, getDocs, serverTimestamp, runTransaction, query, orderBy } from 'firebase/firestore';
 import { GameMode } from './AdminModes';
 import { uploadOriginalImage } from '../utils/imageCompressor';
+import { isAuthorizedAdmin } from '../utils/adminAuth';
 
 interface AdminCreateMatchProps {
   onPageChange: (page: Page) => void;
@@ -94,6 +95,10 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
 
   // Fetch Dynamic Game Modes from Firestore
   useEffect(() => {
+    if (!isAuthorizedAdmin(auth.currentUser)) {
+      onPageChange(Page.HOME);
+      return;
+    }
     const fetchGameModes = async () => {
       setLoadingModes(true);
       try {
@@ -173,10 +178,12 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
         setUploadProgress(progress);
       });
       setMatchForm(prev => ({ ...prev, image: uploadedUrl }));
-    } catch (err) {
+    } catch (err: any) {
       console.error('Image upload failed:', err);
+      alert(err?.message || 'Gallery upload failed, please try another image.');
     } finally {
       setIsUploadingImage(false);
+      e.target.value = '';
     }
   };
 

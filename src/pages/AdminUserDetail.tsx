@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { useParams } from 'react-router-dom';
 import { Page, User, Transaction, Wallet } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { isAuthorizedAdmin } from '../utils/adminAuth';
 import { 
   doc, 
   onSnapshot, 
@@ -35,6 +36,10 @@ export default function AdminUserDetail({ onPageChange }: AdminUserDetailProps) 
   const [reason, setReason] = useState('');
 
   useEffect(() => {
+    if (!isAuthorizedAdmin(auth.currentUser)) {
+      onPageChange(Page.HOME);
+      return;
+    }
     if (!userId) return;
 
     // Real-time user data

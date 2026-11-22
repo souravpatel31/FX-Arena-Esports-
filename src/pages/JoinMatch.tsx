@@ -244,8 +244,7 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
       const regId = `${matchId}_${auth.currentUser.uid}`;
       const regRef = doc(db, 'registrations', regId);
 
-      const entryFeePerSlot = matchData?.entryFee || 0;
-      const totalFee = entryFeePerSlot * selectedSlots.length;
+      const round2 = (val: number) => Math.round(val * 100) / 100;
 
       await runTransaction(db, async (transaction) => {
         const userDoc = await transaction.get(userRef);
@@ -254,17 +253,26 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
         if (!userDoc.exists()) throw new Error('User profile not found. Please log in again.');
         if (!matchDoc.exists()) throw new Error('Match not found.');
 
-        const userData = userDoc.data() as UserType;
+        const userData = userDoc.data() as any;
         const tournamentData = matchDoc.data() as Tournament;
 
         if ((tournamentData.players as any[])?.some((p: any) => p.userId === auth.currentUser?.uid)) {
           throw new Error('You have already joined this match.');
         }
 
-        const deposit = userData.wallet?.deposit || 0;
-        const winnings = userData.wallet?.winnings || 0;
-        const bonus = userData.wallet?.bonus || 0;
-        const totalPayable = deposit + winnings + bonus;
+        const rawFee =
+          tournamentData.entryFee !== undefined && tournamentData.entryFee !== null
+            ? Number(tournamentData.entryFee)
+            : matchData?.entryFee !== undefined && matchData?.entryFee !== null
+            ? Number(matchData.entryFee)
+            : 5;
+        const entryFeePerSlot = Number.isFinite(rawFee) && rawFee >= 0 ? rawFee : 0;
+        const totalFee = round2(entryFeePerSlot * selectedSlots.length);
+
+        const deposit = Number(userData.wallet ? userData.wallet.deposit || 0 : userData.walletBalance || 0);
+        const winnings = Number(userData.wallet ? userData.wallet.winnings || 0 : userData.winnings || 0);
+        const bonus = Number(userData.wallet ? userData.wallet.bonus || 0 : userData.bonus || 0);
+        const totalPayable = round2(deposit + winnings + bonus);
 
         if (totalPayable < totalFee) {
           throw new Error('NOT_ENOUGH_BALANCE');
@@ -290,40 +298,48 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
 
         // 1. Use Bonus first
         if (newBonus >= remaining) {
-          newBonus -= remaining;
+          newBonus = round2(newBonus - remaining);
           remaining = 0;
         } else {
-          remaining -= newBonus;
+          remaining = round2(remaining - newBonus);
           newBonus = 0;
         }
 
         // 2. Use Deposit next
         if (remaining > 0) {
           if (newDeposit >= remaining) {
-            newDeposit -= remaining;
+            newDeposit = round2(newDeposit - remaining);
             remaining = 0;
           } else {
-            remaining -= newDeposit;
+            remaining = round2(remaining - newDeposit);
             newDeposit = 0;
           }
         }
 
         // 3. Use Winnings last
         if (remaining > 0) {
-          newWinnings = Math.max(0, newWinnings - remaining);
+          newWinnings = Math.max(0, round2(newWinnings - remaining));
           remaining = 0;
         }
 
-        transaction.update(userRef, {
-          "wallet.deposit": newDeposit,
-          "wallet.winnings": newWinnings,
-          "wallet.bonus": newBonus
-        });
+        if (!userData.wallet) {
+          transaction.update(userRef, {
+            wallet: {
+              deposit: newDeposit,
+              winnings: newWinnings,
+              bonus: newBonus,
+            },
+          });
+        } else {
+          transaction.update(userRef, {
+            'wallet.deposit': newDeposit,
+            'wallet.winnings': newWinnings,
+            'wallet.bonus': newBonus,
+          });
+        }
 
         // Prepare team members array
-        const teamMembers = [
-          { name: inGameName, isOwner: true }
-        ];
+        const teamMembers = [{ name: inGameName, isOwner: true }];
         for (let i = 0; i < selectedSlots.length - 1; i++) {
           teamMembers.push({ name: teammateIGNs[i], isOwner: false } as any);
         }
@@ -333,13 +349,13 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
           userId: auth.currentUser!.uid,
           username: user.username,
           ign: index === 0 ? inGameName : teammateIGNs[index - 1],
-          slot: slot
+          slot: slot,
         }));
 
         // Update Match
         transaction.update(matchRef, {
           players: arrayUnion(...playersToAdd),
-          playersCount: increment(selectedSlots.length)
+          playersCount: increment(selectedSlots.length),
         });
 
         // Create registration
@@ -352,7 +368,7 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
           totalSlotsBooked: selectedSlots.length,
           joinedAt: serverTimestamp(),
           gameId: tournamentData.gameId || 'freefire',
-          status: 'active'
+          status: 'active',
         });
 
         // Add transaction log
@@ -364,8 +380,8 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
             amount: totalFee,
             matchId: matchId,
             status: 'completed',
-            title: `JOINED MATCH: ${tournamentData.title || tournamentData.displayId || '#000'} (${selectedSlots.length} Slots)`,
-            createdAt: serverTimestamp()
+            title: `JOINED MATCH: ${tournamentData.title || tournamentData.displayId || '#000'} (${selectedSlots.length} Slots)`.slice(0, 200),
+            createdAt: serverTimestamp(),
           });
         }
       });
@@ -726,9 +742,13 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
                     <span className="text-neutral-400 font-bold text-[11px] uppercase">In-Game Name</span>
                     <span className="font-extrabold text-cyan-300 truncate max-w-[150px]">{inGameName}</span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-neutral-400 font-bold text-[11px] uppercase">Entry Fee Paid</span>
+                  <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                    <span className="text-neutral-400 font-bold text-[11px] uppercase">Entry Fee Deducted</span>
                     <span className="font-black text-amber-300">₹{totalAmount}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-neutral-400 font-bold text-[11px] uppercase">Remaining Balance</span>
+                    <span className="font-black text-emerald-400">₹{userBalance.toFixed(2)}</span>
                   </div>
                 </div>
 

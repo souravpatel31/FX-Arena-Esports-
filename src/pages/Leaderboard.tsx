@@ -5,8 +5,9 @@ import { db } from '../lib/firebase';
 import { collection, query, orderBy, limit, onSnapshot, getDocs, where } from 'firebase/firestore';
 import { User } from '../types';
 import SafeImage from '../components/SafeImage';
+import { APP_LOGO_URL } from '../utils/assetUrl';
 
-const APP_LOGO = "/assets/aistudio/fx_arena_icon_512_8f7073a7.png";
+const APP_LOGO = APP_LOGO_URL;
 
 type LeaderboardTab = 'weekly' | 'monthly';
 

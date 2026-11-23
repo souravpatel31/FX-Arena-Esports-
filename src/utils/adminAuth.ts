@@ -7,6 +7,10 @@ export const ADMIN_EMAILS = [
 
 export const ADMIN_UIDS = ['XoXyXcnrlzOaMIKKolXnU3mT9xn1'];
 
+export const STAFF_EMAILS = [
+  'adminrushxesports@gmail.com',
+];
+
 export function isAuthorizedAdmin(
   account?: { email?: string | null; id?: string; uid?: string } | null
 ): boolean {
@@ -14,4 +18,18 @@ export function isAuthorizedAdmin(
   const email = (account.email || '').toLowerCase().trim();
   const uid = account.id || account.uid || '';
   return ADMIN_EMAILS.includes(email) || ADMIN_UIDS.includes(uid);
+}
+
+export function isStaffUser(
+  account?: { email?: string | null; id?: string; uid?: string } | null
+): boolean {
+  if (!account) return false;
+  const email = (account.email || '').toLowerCase().trim();
+  return STAFF_EMAILS.includes(email) && !isAuthorizedAdmin(account);
+}
+
+export function hasControlPanelAccess(
+  account?: { email?: string | null; id?: string; uid?: string } | null
+): boolean {
+  return isAuthorizedAdmin(account) || isStaffUser(account);
 }

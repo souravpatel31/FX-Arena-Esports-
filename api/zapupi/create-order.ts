@@ -146,7 +146,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // Fetch user profile from Firestore for accurate metadata
-    let customerName = "FX Arena Esports User";
+    let customerName = "FX Arena eSport User";
     let customerEmail = "user@fxarenaesports.com";
     let customerPhone = "9999999999";
 

@@ -32,6 +32,37 @@ service cloud.firestore {
       );
     }
 
+    function isStaff() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/staff/$(request.auth.uid)) ||
+        (request.auth.token.email_verified == true && request.auth.token.email is string && (
+          request.auth.token.email.lower() == "adminrushxesports@gmail.com"
+        ))
+      );
+    }
+
+    function isValidStaffResultUserUpdate(existingData, incomingData) {
+      return incomingData.diff(existingData).affectedKeys().hasOnly(['wallet', 'stats']) && (
+        !incomingData.diff(existingData).affectedKeys().hasAny(['wallet']) || (
+          !('wallet' in existingData) ? (
+            incomingData.wallet is map &&
+            incomingData.wallet.get('deposit', 0) == existingData.get('walletBalance', 0) &&
+            incomingData.wallet.get('bonus', 0) == existingData.get('bonus', 0) &&
+            incomingData.wallet.get('winnings', 0) is number &&
+            incomingData.wallet.get('winnings', 0) >= existingData.get('winnings', 0) &&
+            incomingData.wallet.get('winnings', 0) <= existingData.get('winnings', 0) + 50000
+          ) : (
+            incomingData.wallet is map &&
+            incomingData.wallet.get('deposit', 0) == existingData.wallet.get('deposit', 0) &&
+            incomingData.wallet.get('bonus', 0) == existingData.wallet.get('bonus', 0) &&
+            incomingData.wallet.get('winnings', 0) is number &&
+            incomingData.wallet.get('winnings', 0) >= existingData.wallet.get('winnings', 0) &&
+            incomingData.wallet.get('winnings', 0) <= existingData.wallet.get('winnings', 0) + 50000
+          )
+        )
+      );
+    }
+
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
@@ -48,6 +79,15 @@ service cloud.firestore {
              data.image is string && data.image.size() <= 500000;
     }
 
+    function isValidMatchCredential(data) {
+      return data.keys().hasAll(['matchId']) &&
+             data.keys().hasOnly(['matchId', 'roomId', 'roomPassword', 'roomNotes', 'updatedAt']) &&
+             data.matchId is string && isValidId(data.matchId) &&
+             (!('roomId' in data) || (data.roomId is string && data.roomId.size() <= 100)) &&
+             (!('roomPassword' in data) || (data.roomPassword is string && data.roomPassword.size() <= 100)) &&
+             (!('roomNotes' in data) || (data.roomNotes is string && data.roomNotes.size() <= 500));
+    }
+
     function isValidInitialWallet(data) {
       return (!('wallet' in data) || (
                data.wallet is map &&
@@ -60,10 +100,42 @@ service cloud.firestore {
              (!('bonus' in data) || (data.bonus is number && data.bonus == 0));
     }
 
+    function isValidInitialStats(data) {
+      return !('stats' in data) || (
+        data.stats is map &&
+        data.stats.get('matchesPlayed', 0) is number && data.stats.get('matchesPlayed', 0) == 0 &&
+        data.stats.get('totalWins', 0) is number && data.stats.get('totalWins', 0) == 0 &&
+        data.stats.get('totalKills', 0) is number && data.stats.get('totalKills', 0) == 0 &&
+        data.stats.get('totalWinnings', 0) is number && data.stats.get('totalWinnings', 0) == 0
+      );
+    }
+
+    function userTotalBalance(uData) {
+      return ('wallet' in uData && uData.wallet is map)
+        ? (uData.wallet.get('deposit', 0) + uData.wallet.get('winnings', 0) + uData.wallet.get('bonus', 0))
+        : (uData.get('walletBalance', 0) + uData.get('winnings', 0) + uData.get('bonus', 0));
+    }
+
+    function userWinningsBalance(uData) {
+      return ('wallet' in uData && uData.wallet is map)
+        ? uData.wallet.get('winnings', 0)
+        : uData.get('winnings', 0);
+    }
+
     function isValidUserCreate(data) {
       return data.keys().hasAll(['username', 'email']) &&
+             data.keys().hasOnly([
+               'username', 'email', 'phone', 'ign', 'gameIGNs', 'wallet',
+               'isKycVerified', 'isAdmin', 'isBanned', 'stats', 'referredBy',
+               'referralClaimed', 'deviceId', 'fcmEnabled', 'notificationsEnabled',
+               'createdAt', 'walletBalance', 'winnings', 'bonus'
+             ]) &&
              data.username is string && data.username.size() <= 100 &&
              data.email is string && data.email.size() <= 200 &&
+             (!('phone' in data) || data.phone == null || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('ign' in data) || data.ign == null || (data.ign is string && data.ign.size() <= 100)) &&
+             (!('referredBy' in data) || data.referredBy == null || (data.referredBy is string && data.referredBy.size() <= 100)) &&
+             (!('deviceId' in data) || data.deviceId == null || (data.deviceId is string && data.deviceId.size() <= 128)) &&
              (!('wallet' in data) || data.wallet is map) &&
              (!('walletBalance' in data) || data.walletBalance is number);
     }
@@ -71,8 +143,13 @@ service cloud.firestore {
     function isValidUserUpdate(data) {
       return (!('username' in data) || (data.username is string && data.username.size() <= 100)) &&
              (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
-             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
-             (!('ign' in data) || (data.ign is string && data.ign.size() <= 100)) &&
+             (!('phone' in data) || data.phone == null || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('ign' in data) || data.ign == null || (data.ign is string && data.ign.size() <= 100)) &&
+             (!('gameIGNs' in data) || data.gameIGNs is map) &&
+             (!('fcmEnabled' in data) || data.fcmEnabled is bool) &&
+             (!('notificationsEnabled' in data) || data.notificationsEnabled is bool) &&
+             (!('referralClaimed' in data) || data.referralClaimed is bool) &&
+             (!('deviceId' in data) || data.deviceId == null || (data.deviceId is string && data.deviceId.size() <= 128)) &&
              (!('wallet' in data) || data.wallet is map);
     }
 
@@ -105,17 +182,32 @@ service cloud.firestore {
 
     function isValidRegistration(data) {
       return data.keys().hasAll(['tournamentId', 'userId', 'ign']) &&
-             data.tournamentId is string && data.tournamentId.size() <= 128 &&
+             data.keys().hasOnly([
+               'tournamentId', 'userId', 'ign', 'slot', 'slots',
+               'teamMembers', 'totalSlotsBooked', 'gameId', 'status', 'joinedAt'
+             ]) &&
+             data.tournamentId is string && isValidId(data.tournamentId) &&
              data.userId is string && data.userId.size() <= 128 &&
-             data.ign is string && data.ign.size() <= 100;
+             data.ign is string && data.ign.size() >= 1 && data.ign.size() <= 100 &&
+             (!('slots' in data) || (data.slots is list && data.slots.size() >= 1 && data.slots.size() <= 4)) &&
+             (!('totalSlotsBooked' in data) || (data.totalSlotsBooked is number && data.totalSlotsBooked >= 1 && data.totalSlotsBooked <= 4)) &&
+             (!('slots' in data) || !('totalSlotsBooked' in data) || data.slots.size() == data.totalSlotsBooked) &&
+             (!('teamMembers' in data) || (data.teamMembers is list && data.teamMembers.size() >= 1 && data.teamMembers.size() <= 4)) &&
+             (!('gameId' in data) || (data.gameId is string && data.gameId.size() <= 64)) &&
+             (!('status' in data) || (data.status is string && data.status.size() <= 30));
     }
 
     function isValidTransaction(data) {
       return data.keys().hasAll(['userId', 'type', 'amount', 'status']) &&
+             data.keys().hasOnly([
+               'userId', 'type', 'amount', 'status', 'matchId', 'title',
+               'paymentMethod', 'upiId', 'utrNumber', 'createdAt', 'updatedAt'
+             ]) &&
              data.userId is string && data.userId.size() <= 128 &&
              data.type is string && data.type.size() <= 30 &&
              data.amount is number && data.amount >= 0 &&
              data.status is string && data.status.size() <= 30 &&
+             (!('matchId' in data) || (data.matchId is string && data.matchId.size() <= 128)) &&
              (!('title' in data) || (data.title is string && data.title.size() <= 200)) &&
              (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 64)) &&
              (!('upiId' in data) || (data.upiId is string && data.upiId.size() <= 128)) &&
@@ -127,6 +219,12 @@ service cloud.firestore {
     // Admins: Trusted role mappings
     match /admins/{adminId} {
       allow get: if isSignedIn() && isValidId(adminId) && (request.auth.uid == adminId || isAdmin());
+      allow list, create, update, delete: if isAdmin();
+    }
+
+    // Staff: Trusted match-staff role mappings
+    match /staff/{staffId} {
+      allow get: if isSignedIn() && isValidId(staffId) && (request.auth.uid == staffId || isAdmin());
       allow list, create, update, delete: if isAdmin();
     }
 
@@ -145,16 +243,22 @@ service cloud.firestore {
       allow create: if isOwner(userId) && isValidId(userId) && isValidUserCreate(incoming()) && (
         isAdmin() || (
           (!('isAdmin' in incoming()) || incoming().isAdmin == false) &&
-          isValidInitialWallet(incoming())
+          (!('isKycVerified' in incoming()) || incoming().isKycVerified == false) &&
+          (!('isBanned' in incoming()) || incoming().isBanned == false) &&
+          (!('referralClaimed' in incoming()) || incoming().referralClaimed == false) &&
+          isValidInitialWallet(incoming()) &&
+          isValidInitialStats(incoming())
         )
       );
       allow update: if isSignedIn() && isValidId(userId) && isValidUserUpdate(incoming()) && (
-        isAdmin() || (
+        isAdmin() ||
+        (isStaff() && isValidStaffResultUserUpdate(existing(), incoming())) || (
           isOwner(userId) &&
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'username', 'phone', 'ign', 'gameIGNs', 'wallet', 'stats',
-            'isKycVerified', 'referralClaimed', 'deviceId', 'fcmEnabled', 'notificationsEnabled'
+            'username', 'phone', 'ign', 'gameIGNs', 'wallet',
+            'referralClaimed', 'deviceId', 'fcmEnabled', 'notificationsEnabled'
           ]) &&
+          (!('referralClaimed' in incoming()) || existing().get('referralClaimed', false) == false || incoming().referralClaimed == true) &&
           isValidOwnerWalletUpdate(existing(), incoming())
         )
       );
@@ -174,40 +278,67 @@ service cloud.firestore {
       allow write: if isAdmin() && isValidId(ruleId);
     }
 
-    // Matches: Tournament/match instances
+    // Matches: Tournament/match instances (public/joined overview without private IDP)
     match /matches/{matchId} {
       allow get: if isSignedIn() && isValidId(matchId);
       allow list: if isSignedIn();
-      allow create, delete: if isAdmin() && isValidId(matchId);
+      allow create: if (isAdmin() || isStaff()) && isValidId(matchId);
+      allow delete: if isAdmin() && isValidId(matchId);
       allow update: if isSignedIn() && isValidId(matchId) && (
-        isAdmin() || (
+        isAdmin() || isStaff() || (
+          existing().get('status', 'upcoming') in ['upcoming', 'active'] &&
           incoming().diff(existing()).affectedKeys().hasOnly(['players', 'playersCount']) &&
           incoming().players is list &&
+          existing().get('players', []) is list &&
+          incoming().players.size() > existing().get('players', []).size() &&
+          incoming().players.hasAll(existing().get('players', [])) &&
           incoming().playersCount is number &&
-          incoming().playersCount >= 0
+          incoming().playersCount > existing().get('playersCount', 0) &&
+          incoming().playersCount <= incoming().get('totalSlots', incoming().get('maxPlayers', 100)) &&
+          (incoming().players.size() - existing().get('players', []).size()) == (incoming().playersCount - existing().get('playersCount', 0)) &&
+          existsAfter(/databases/$(database)/documents/registrations/$(matchId + '_' + request.auth.uid)) &&
+          (incoming().players.size() - existing().get('players', []).size()) == getAfter(/databases/$(database)/documents/registrations/$(matchId + '_' + request.auth.uid)).data.get('totalSlotsBooked', 1)
         )
       );
+    }
+
+    // Match Credentials: Private Room ID & Password ONLY for admins, staff, and joined players
+    match /matchCredentials/{matchId} {
+      allow get: if isSignedIn() && isValidId(matchId) && (
+        isAdmin() ||
+        isStaff() ||
+        exists(/databases/$(database)/documents/registrations/$(matchId + '_' + request.auth.uid))
+      );
+      allow list: if isAdmin() || isStaff();
+      allow create, update: if (isAdmin() || isStaff()) && isValidId(matchId) && isValidMatchCredential(incoming());
+      allow delete: if (isAdmin() || isStaff()) && isValidId(matchId);
     }
 
     // Registrations: Player entries into matches
     match /registrations/{registrationId} {
       allow get: if isSignedIn() && isValidId(registrationId) && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && isValidId(registrationId) &&
-                       isValidRegistration(incoming()) &&
-                       incoming().userId == request.auth.uid &&
-                       exists(/databases/$(database)/documents/matches/$(incoming().tournamentId));
-      allow update: if isSignedIn() && isValidId(registrationId) && (
+      allow create: if isSignedIn() && isValidId(registrationId) && isValidRegistration(incoming()) && (
         isAdmin() || (
-          isOwner(existing().userId) &&
-          incoming().userId == existing().userId &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['ign', 'teamMembers', 'slots', 'status'])
+          incoming().userId == request.auth.uid &&
+          registrationId == incoming().tournamentId + '_' + request.auth.uid &&
+          incoming().get('status', 'active') == 'active' &&
+          exists(/databases/$(database)/documents/matches/$(incoming().tournamentId)) &&
+          get(/databases/$(database)/documents/matches/$(incoming().tournamentId)).data.get('status', 'upcoming') in ['upcoming', 'active'] &&
+          existsAfter(/databases/$(database)/documents/matches/$(incoming().tournamentId)) &&
+          (
+            get(/databases/$(database)/documents/matches/$(incoming().tournamentId)).data.get('entryFee', 0) <= 0 ||
+            userTotalBalance(getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data) <=
+              userTotalBalance(get(/databases/$(database)/documents/users/$(request.auth.uid)).data) -
+              (get(/databases/$(database)/documents/matches/$(incoming().tournamentId)).data.get('entryFee', 0) * incoming().get('totalSlotsBooked', 1)) + 0.05
+          )
         )
       );
-      allow delete: if isAdmin() || (isSignedIn() && isValidId(registrationId) && existing().userId == request.auth.uid);
+      allow update: if isAdmin() && isValidId(registrationId) && isValidRegistration(incoming());
+      allow delete: if isAdmin() && isValidId(registrationId);
     }
 
-    // Transactions: Financial audit trail (Immutable)
+    // Transactions: Financial audit trail (Strict creation & immutable history)
     match /transactions/{transactionId} {
       allow get: if isSignedIn() && isValidId(transactionId) && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (
@@ -217,12 +348,40 @@ service cloud.firestore {
       );
       allow create: if isSignedIn() && isValidId(transactionId) &&
                        isValidTransaction(incoming()) && (
-                         isAdmin() || (
+                         isAdmin() ||
+                         (
+                           isStaff() &&
+                           incoming().type == 'win' &&
+                           incoming().status == 'completed' &&
+                           incoming().amount > 0 &&
+                           incoming().amount <= 50000
+                         ) || (
                            incoming().userId == request.auth.uid &&
                            incoming().amount > 0 && incoming().amount <= 50000 &&
                            (
-                             (incoming().type != 'deposit' && incoming().type != 'withdraw' && incoming().type != 'withdrawal') ||
-                             incoming().status == 'pending'
+                             (incoming().type == 'deposit' && incoming().status == 'pending' && incoming().amount >= 10) ||
+                             (
+                               incoming().type in ['withdraw', 'withdrawal'] &&
+                               incoming().status == 'pending' &&
+                               incoming().amount >= 100 &&
+                               userWinningsBalance(getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data) <=
+                                 userWinningsBalance(get(/databases/$(database)/documents/users/$(request.auth.uid)).data) - incoming().amount + 0.05
+                             ) ||
+                             (
+                               incoming().type == 'entry' &&
+                               incoming().status == 'completed' &&
+                               'matchId' in incoming() &&
+                               incoming().matchId is string &&
+                               isValidId(incoming().matchId) &&
+                               existsAfter(/databases/$(database)/documents/registrations/$(incoming().matchId + '_' + request.auth.uid))
+                             ) ||
+                             (
+                               incoming().type == 'bonus' &&
+                               incoming().status == 'completed' &&
+                               incoming().amount <= 10 &&
+                               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('referralClaimed', false) == false &&
+                               getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('referralClaimed', false) == true
+                             )
                            )
                          )
                        );
@@ -244,11 +403,11 @@ service cloud.firestore {
       allow write: if isAdmin() && isValidId(bannerId);
     }
 
-    // Match Results: Declared winners and scores
+    // Match Results: Declared winners and scores (public to signed-in players)
     match /matchResults/{matchId} {
       allow get: if isSignedIn() && isValidId(matchId);
       allow list: if isSignedIn();
-      allow write: if isAdmin() && isValidId(matchId);
+      allow write: if (isAdmin() || isStaff()) && isValidId(matchId);
     }
 
     // Payment Settings: Gateway configurations & API secrets (Admin only)
@@ -261,11 +420,14 @@ service cloud.firestore {
     match /notifications/{notificationId} {
       allow get: if isSignedIn() && isValidId(notificationId);
       allow list: if isSignedIn();
-      allow create, delete: if isAdmin() && isValidId(notificationId);
+      allow create, delete: if (isAdmin() || isStaff()) && isValidId(notificationId);
       allow update: if isSignedIn() && isValidId(notificationId) && (
-        isAdmin() || (
+        isAdmin() || isStaff() || (
           incoming().diff(existing()).affectedKeys().hasOnly(['readBy']) &&
-          incoming().readBy is list
+          incoming().readBy is list &&
+          incoming().readBy.size() <= 10000 &&
+          incoming().readBy.hasAll(existing().get('readBy', [])) &&
+          request.auth.uid in incoming().readBy
         )
       );
     }
@@ -279,7 +441,7 @@ service cloud.firestore {
 
     // Meta/Counters
     match /meta/counters {
-      allow read, get, write: if isAdmin();
+      allow read, get, write: if isAdmin() || isStaff();
     }
   }
 }

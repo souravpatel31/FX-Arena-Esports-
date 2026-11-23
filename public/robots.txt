@@ -6,4 +6,4 @@ Disallow: /admin/
 Disallow: /wallet
 Disallow: /profile
 
-Sitemap: /sitemap.xml
+Sitemap: https://khel-galli-ecsu.vercel.app/sitemap.xml

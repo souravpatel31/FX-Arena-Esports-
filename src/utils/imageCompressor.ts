@@ -7,7 +7,7 @@
 
 import { auth } from '../lib/firebase';
 
-const MAX_FIRESTORE_DATA_URL_CHARS = 420_000;
+const MAX_FIRESTORE_DATA_URL_CHARS = 110_000;
 
 export async function compactImageForFirestore(
   dataUrl: string,
@@ -28,8 +28,8 @@ export async function compactImageForFirestore(
           return;
         }
 
-        const maxWidths = [1280, 960, 720, 540, 400];
-        const qualities = [0.85, 0.72, 0.58, 0.45, 0.35];
+        const maxWidths = [840, 680, 520, 400, 320];
+        const qualities = [0.8, 0.68, 0.56, 0.44, 0.34];
 
         let best = dataUrl;
         for (const maxWidth of maxWidths) {
@@ -43,7 +43,12 @@ export async function compactImageForFirestore(
           ctx.drawImage(img, 0, 0, w, h);
 
           for (const q of qualities) {
-            const candidate = canvas.toDataURL('image/jpeg', q);
+            const webpCandidate = canvas.toDataURL('image/webp', q);
+            const jpegCandidate = canvas.toDataURL('image/jpeg', q);
+            const candidate =
+              webpCandidate.startsWith('data:image/webp') && webpCandidate.length < jpegCandidate.length
+                ? webpCandidate
+                : jpegCandidate;
             best = candidate;
             if (candidate.length <= maxChars) {
               resolve(candidate);
@@ -65,7 +70,6 @@ export async function uploadOriginalImage(
   fileOrBase64: File | Blob | string,
   onProgress?: (progress: number) => void
 ): Promise<string> {
-  // If it's already a hosted URL (http / https / /uploads/...), return as is
   if (typeof fileOrBase64 === 'string') {
     if (
       fileOrBase64.startsWith('http://') ||
@@ -77,7 +81,6 @@ export async function uploadOriginalImage(
     }
   }
 
-  // Convert File / Blob to DataURL
   let base64String: string;
   let fileName = 'match_image.png';
 
@@ -93,14 +96,16 @@ export async function uploadOriginalImage(
     });
   }
 
-  if (onProgress) onProgress(25);
+  if (onProgress) onProgress(30);
 
-  // 1. Try uploading to backend /api/upload-image (only exists on hosted Node server, not inside standalone APK)
   const isCapacitorNative =
     typeof window !== 'undefined' &&
     Boolean((window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.());
+  const isStaticHost =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.endsWith('github.io') || window.location.protocol === 'file:');
 
-  if (!isCapacitorNative) {
+  if (!isCapacitorNative && !isStaticHost) {
     try {
       const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : '';
       const headers: Record<string, string> = {
@@ -111,7 +116,7 @@ export async function uploadOriginalImage(
       }
 
       const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 5000);
+      const timer = window.setTimeout(() => controller.abort(), 1500);
       try {
         const res = await fetch('/api/upload-image', {
           method: 'POST',
@@ -123,7 +128,7 @@ export async function uploadOriginalImage(
           }),
         });
 
-        if (onProgress) onProgress(65);
+        if (onProgress) onProgress(70);
 
         const contentType = res.headers.get('content-type') || '';
         if (res.ok && contentType.includes('application/json')) {
@@ -137,11 +142,10 @@ export async function uploadOriginalImage(
         window.clearTimeout(timer);
       }
     } catch (err) {
-      console.warn('[Upload] Server upload skipped/unavailable, using fallback:', err);
+      console.warn('[Upload] Server upload skipped/unavailable, using compact fallback:', err);
     }
   }
 
-  // 2. Try client-side ImgBB if key exists
   const apiKey = import.meta.env.VITE_IMGBB_API_KEY;
   if (apiKey) {
     try {
@@ -163,7 +167,6 @@ export async function uploadOriginalImage(
     }
   }
 
-  // 3. Fallback for standalone APK / static builds: compact safely for Firestore (<420KB)
   if (onProgress) onProgress(80);
   const compacted = await compactImageForFirestore(base64String, MAX_FIRESTORE_DATA_URL_CHARS);
   if (onProgress) onProgress(100);

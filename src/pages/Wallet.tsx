@@ -131,7 +131,7 @@ export default function WalletPage({ user, onPageChange }: WalletPageProps) {
       <div className="px-4 sm:px-5 pt-4 sm:pt-6 space-y-4">
         
         {/* ========================================================================= */}
-        {/* 1. TOP HEADER (White card with Gamepad, Server Online, KHEL GALLI, Balance) */}
+        {/* 1. TOP HEADER (White card with Gamepad, Server Online, FX ARENA ESPORT, Balance) */}
         {/* ========================================================================= */}
         <header className="bg-white border border-[#E5E7EB] rounded-2xl p-3 sm:p-3.5 shadow-xs flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -146,7 +146,7 @@ export default function WalletPage({ user, onPageChange }: WalletPageProps) {
                 <span className="w-2 h-2 rounded-full bg-[#16A34A] animate-pulse" />
               </div>
               <h1 className="text-base sm:text-lg font-black tracking-tight text-[#172033] leading-none mt-0.5">
-                FX ARENA <span className="text-[#7C3AED]">ESPORTS</span>
+                FX ARENA <span className="text-[#7C3AED]">ESPORT</span>
               </h1>
             </div>
           </div>

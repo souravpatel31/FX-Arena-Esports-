@@ -1,297 +1,340 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { motion } from 'motion/react';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Download,
-  ShieldCheck,
+  Share2,
+  Copy,
+  CheckCircle2,
   Trophy,
   Zap,
+  Key,
+  ShieldCheck,
   Smartphone,
+  ArrowLeft,
+  ArrowRight,
   LogIn,
   UserPlus,
-  Headphones,
-  CheckCircle2,
-  Gamepad2,
-  ArrowRight,
-  HelpCircle,
 } from 'lucide-react';
+import { Share } from '@capacitor/share';
+import { Capacitor } from '@capacitor/core';
 import { auth, db } from '../lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
-import { APP_LOGO_URL, WELCOME_SPLASH_URL } from '../utils/assetUrl';
-
-const ENV_APK_URL = (import.meta.env.VITE_APK_DOWNLOAD_URL || '').trim();
+import { APP_LOGO_URL } from '../utils/assetUrl';
+import { buildAppSharePayload, getCleanPublicOrigin, getDownloadButtonHref } from '../utils/shareLinks';
 
 interface DownloadAppProps {
   isLoggedIn?: boolean;
 }
 
 export default function DownloadApp({ isLoggedIn = false }: DownloadAppProps) {
-  const [apkUrl, setApkUrl] = useState<string>(ENV_APK_URL);
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const refCode = (searchParams.get('ref') || '').trim();
+
+  const [appSettings, setAppSettings] = useState<any>(null);
+  const [shareToast, setShareToast] = useState<string | null>(null);
   const [downloadNote, setDownloadNote] = useState<string | null>(null);
 
   useEffect(() => {
-    // Authenticated users can also receive a dynamically configured APK URL from Firestore
+    const origin = getCleanPublicOrigin(appSettings);
+    const prevTitle = document.title;
+    document.title = 'Download FX Arena eSport APK – Official Android App';
+    const canonicalEl = document.querySelector('link[rel="canonical"]');
+    const prevCanonical = canonicalEl?.getAttribute('href') || '';
+    if (canonicalEl) {
+      canonicalEl.setAttribute('href', `${origin}/download`);
+    }
+    return () => {
+      document.title = prevTitle;
+      if (canonicalEl && prevCanonical) {
+        canonicalEl.setAttribute('href', prevCanonical);
+      }
+    };
+  }, [appSettings]);
+
+  useEffect(() => {
     if (!auth.currentUser) return;
     getDoc(doc(db, 'appSettings', 'referral_support'))
       .then((snap) => {
         if (snap.exists()) {
-          const customUrl = (snap.data()?.referral?.apkDownloadUrl || '').trim();
-          if (customUrl && !customUrl.includes('localhost')) {
-            setApkUrl(customUrl);
-          }
+          setAppSettings(snap.data());
         }
       })
-      .catch(() => {
-        // Ignore gracefully; env APK URL remains active
-      });
+      .catch(() => {});
   }, [isLoggedIn]);
 
+  const { href: downloadHref, isReady } = getDownloadButtonHref(appSettings);
+  const sharePayload = buildAppSharePayload(appSettings, refCode || undefined);
+
   const handleApkDownloadClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (!apkUrl) {
+    if (!isReady || !downloadHref) {
       e.preventDefault();
-      setDownloadNote(
-        'Official APK release link is being prepared. You can create your account or log in directly on Web right now!'
-      );
+      setDownloadNote('APK link is currently updating. Please try again shortly.');
     }
   };
 
+  const handleCopyCleanLink = async () => {
+    try {
+      await navigator.clipboard.writeText(sharePayload.copyText);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = sharePayload.copyText;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    setShareToast('App link copied!');
+    setTimeout(() => setShareToast(null), 2500);
+  };
+
+  const handleShareApp = async () => {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await Share.share({
+          title: sharePayload.title,
+          text: sharePayload.text,
+          url: sharePayload.url,
+          dialogTitle: sharePayload.title,
+        });
+        return;
+      } catch (err: any) {
+        const msg = String(err?.message || '').toLowerCase();
+        if (msg.includes('cancel') || err?.name === 'AbortError') return;
+      }
+    }
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: sharePayload.title,
+          text: sharePayload.text,
+          url: sharePayload.url,
+        });
+        return;
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+      }
+    }
+
+    await handleCopyCleanLink();
+  };
+
+  const signupPath = refCode ? `/signup?ref=${encodeURIComponent(refCode)}` : '/signup';
+  const loginPath = refCode ? `/login?ref=${encodeURIComponent(refCode)}` : '/login';
+
   return (
-    <div className="min-h-screen bg-[#050814] text-white selection:bg-purple-500/30 pb-16">
-      {/* Top Public Header (No Admin Links) */}
-      <header className="sticky top-0 z-30 bg-[#050814]/85 backdrop-blur-md border-b border-white/10">
-        <div className="max-w-lg mx-auto px-4 h-16 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <img
-              src={APP_LOGO_URL}
-              alt="FX Arena Esports Logo"
-              className="w-10 h-10 rounded-xl object-cover border border-white/15 shadow-lg shrink-0"
-            />
-            <div className="min-w-0">
-              <p className="text-sm font-black uppercase tracking-tight text-white truncate">
-                FX Arena <span className="text-purple-400">Esports</span>
-              </p>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-400">
-                Official Android App
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <Link
-              to={isLoggedIn ? '/home' : '/login'}
-              className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-[11px] font-black uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5 shadow-lg shadow-purple-600/25"
+    <div className="min-h-screen bg-[#050814] text-white px-4 py-8 pb-16">
+      <main className="w-full max-w-md mx-auto space-y-5">
+        {isLoggedIn && (
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => navigate('/profile')}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-slate-200 transition-colors"
             >
-              <LogIn size={14} />
-              <span>{isLoggedIn ? 'Open App' : 'Login'}</span>
-            </Link>
+              <ArrowLeft size={15} />
+              <span>Back to Settings</span>
+            </button>
           </div>
-        </div>
-      </header>
+        )}
 
-      <main className="max-w-lg mx-auto px-4 pt-6 space-y-6">
-        {/* Hero Section */}
-        <motion.section
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35 }}
-          className="relative overflow-hidden rounded-[2rem] bg-gradient-to-b from-[#131d3b] via-[#0c1226] to-[#080b18] border border-white/10 p-6 shadow-2xl"
-        >
-          <div className="absolute -top-20 -right-16 w-56 h-56 bg-purple-600/20 blur-3xl rounded-full pointer-events-none" />
-          <div className="absolute -bottom-20 -left-16 w-56 h-56 bg-red-600/15 blur-3xl rounded-full pointer-events-none" />
-
-          <div className="relative z-10 flex flex-col items-center text-center">
+        {/* Primary Hero Download Card */}
+        <section className="rounded-3xl bg-gradient-to-b from-[#111936] to-[#0b1022] border border-white/10 p-6 text-center shadow-2xl space-y-5">
+          <div className="relative inline-block">
             <img
               src={APP_LOGO_URL}
-              alt="FX Arena Esports Official Icon"
-              className="w-24 h-24 rounded-3xl object-cover border-2 border-purple-400/40 shadow-2xl mb-4"
+              alt="FX Arena eSport"
+              className="w-24 h-24 rounded-3xl object-cover mx-auto border border-white/15 shadow-xl"
             />
-
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-black uppercase tracking-widest mb-3">
-              <ShieldCheck size={12} /> Verified Android APK • Free Download
+            <span className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-black uppercase tracking-widest text-emerald-300">
+              <ShieldCheck size={12} />
+              Official Android App
             </span>
+          </div>
 
-            <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-tight leading-tight text-white">
-              FX Arena <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-amber-300">Esports</span>
+          <div className="space-y-1.5">
+            <h1 className="text-2xl font-black uppercase tracking-tight text-white">
+              FX Arena eSport
             </h1>
-
-            <p className="mt-2.5 text-xs sm:text-sm text-neutral-300 leading-relaxed max-w-sm">
-              Daily Free Fire Battle Royale, Clash Squad &amp; Lone Wolf custom room tournaments. Join rooms, compete fairly, and win instant rewards.
+            <p className="text-xs text-slate-300 font-medium leading-relaxed">
+              Daily Free Fire Custom Room Tournaments, Instant Room ID &amp; Password Alerts, and Fast Wallet Withdrawals.
             </p>
+          </div>
 
-            {/* Primary Download APK CTA */}
-            <div className="w-full mt-6 space-y-3">
-              <a
-                href={apkUrl || '#download-unavailable'}
-                onClick={handleApkDownloadClick}
-                download="FX-Arena-Esports.apk"
-                rel="noopener noreferrer"
-                className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-purple-600 via-violet-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-xs sm:text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 shadow-xl shadow-purple-600/30 active:scale-[0.98] transition-all"
+          {refCode && (
+            <div className="px-3.5 py-2 rounded-xl bg-purple-500/15 border border-purple-500/30 text-xs font-bold text-purple-200">
+              Invited by <span className="text-white font-black">@{refCode}</span> — Download &amp; Signup to claim your bonus!
+            </div>
+          )}
+
+          <div className="space-y-2.5 pt-1">
+            <a
+              href={downloadHref || '#download'}
+              onClick={handleApkDownloadClick}
+              download="FX-Arena-Esports.apk"
+              rel="noopener noreferrer"
+              className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 shadow-xl shadow-purple-600/30 active:scale-[0.98] transition-all"
+            >
+              <Download size={18} />
+              <span>Download APK</span>
+            </a>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={handleShareApp}
+                className="py-3 px-4 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-xs font-black uppercase tracking-wider text-white flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
               >
-                <Download size={18} />
-                <span>Download Official Android APK</span>
-              </a>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <Link
-                  to={isLoggedIn ? '/home' : '/login'}
-                  className="py-3 px-4 rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 text-white font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all"
-                >
-                  <LogIn size={14} />
-                  <span>{isLoggedIn ? 'Go to Home' : 'Web Login'}</span>
-                </Link>
-                <Link
-                  to={isLoggedIn ? '/tournaments' : '/signup'}
-                  className="py-3 px-4 rounded-xl bg-neutral-900 hover:bg-neutral-800 border border-white/10 text-purple-300 font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all"
-                >
-                  <UserPlus size={14} />
-                  <span>{isLoggedIn ? 'Tournaments' : 'Create Account'}</span>
-                </Link>
-              </div>
-            </div>
-
-            {downloadNote && (
-              <div className="mt-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-[11px] font-medium leading-relaxed">
-                {downloadNote}
-              </div>
-            )}
-
-            <div className="mt-5 pt-4 border-t border-white/10 w-full grid grid-cols-3 gap-2 text-center">
-              <div>
-                <p className="text-xs font-black text-white">Android 7+</p>
-                <p className="text-[10px] text-neutral-400">Platform</p>
-              </div>
-              <div>
-                <p className="text-xs font-black text-emerald-400">Free</p>
-                <p className="text-[10px] text-neutral-400">App Download</p>
-              </div>
-              <div>
-                <p className="text-xs font-black text-amber-300">24/7</p>
-                <p className="text-[10px] text-neutral-400">Custom Rooms</p>
-              </div>
+                <Share2 size={15} className="text-purple-300" />
+                <span>Share App</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleCopyCleanLink}
+                className="py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-black uppercase tracking-wider text-slate-200 flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+              >
+                <Copy size={15} className="text-emerald-300" />
+                <span>Copy Link</span>
+              </button>
             </div>
           </div>
-        </motion.section>
 
-        {/* Preview Banner */}
-        <section className="rounded-3xl overflow-hidden border border-white/10 bg-[#0b1020] shadow-xl">
-          <img
-            src={WELCOME_SPLASH_URL}
-            alt="FX Arena Esports Tournament Poster"
-            className="w-full max-h-80 object-cover object-top"
-            loading="lazy"
-          />
+          {shareToast && (
+            <div className="py-2 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-xs font-bold text-emerald-300 flex items-center justify-center gap-1.5">
+              <CheckCircle2 size={14} />
+              <span>{shareToast}</span>
+            </div>
+          )}
+
+          {downloadNote && (
+            <p className="text-xs text-amber-300 font-medium">{downloadNote}</p>
+          )}
         </section>
 
-        {/* Key Features for Players & Search Engines */}
-        <section aria-labelledby="features-heading" className="space-y-3">
-          <h2 id="features-heading" className="text-xs font-black uppercase tracking-widest text-neutral-400 px-1">
-            Why Players Choose FX Arena Esports
-          </h2>
-
-          <div className="grid grid-cols-2 gap-3">
-            <article className="p-4 rounded-2xl bg-[#0e1428] border border-white/10 space-y-2">
-              <div className="w-9 h-9 rounded-xl bg-purple-500/15 text-purple-400 flex items-center justify-center">
-                <Trophy size={18} />
-              </div>
-              <h3 className="text-xs font-black uppercase text-white">Daily Tournaments</h3>
-              <p className="text-[11px] text-neutral-400 leading-relaxed">
-                BR Solo, Duo, Squad, Clash Squad 4v4, and Lone Wolf 1v1 custom rooms every day.
-              </p>
-            </article>
-
-            <article className="p-4 rounded-2xl bg-[#0e1428] border border-white/10 space-y-2">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-400 flex items-center justify-center">
-                <Zap size={18} />
-              </div>
-              <h3 className="text-xs font-black uppercase text-white">Instant Rewards</h3>
-              <p className="text-[11px] text-neutral-400 leading-relaxed">
-                Per-kill &amp; rank prize pools credited directly to your secure in-app wallet.
-              </p>
-            </article>
-
-            <article className="p-4 rounded-2xl bg-[#0e1428] border border-white/10 space-y-2">
-              <div className="w-9 h-9 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
-                <ShieldCheck size={18} />
-              </div>
-              <h3 className="text-xs font-black uppercase text-white">Fair Play Arena</h3>
-              <p className="text-[11px] text-neutral-400 leading-relaxed">
-                Verified Room ID &amp; Password delivery and strict anti-cheat tournament monitoring.
-              </p>
-            </article>
-
-            <article className="p-4 rounded-2xl bg-[#0e1428] border border-white/10 space-y-2">
-              <div className="w-9 h-9 rounded-xl bg-sky-500/15 text-sky-400 flex items-center justify-center">
-                <Headphones size={18} />
-              </div>
-              <h3 className="text-xs font-black uppercase text-white">24/7 Player Support</h3>
-              <p className="text-[11px] text-neutral-400 leading-relaxed">
-                Fast assistance via in-app support, WhatsApp, and Telegram community channels.
-              </p>
-            </article>
-          </div>
-        </section>
-
-        {/* How to Install APK Guide */}
-        <section aria-labelledby="install-guide-heading" className="p-5 rounded-3xl bg-[#0e1428] border border-white/10 space-y-3">
-          <div className="flex items-center gap-2">
-            <Smartphone size={16} className="text-purple-400" />
-            <h2 id="install-guide-heading" className="text-xs font-black uppercase tracking-wider text-white">
-              How to Install FX Arena Esports APK on Android
+        {/* Feature Text Cards */}
+        <section className="grid grid-cols-2 gap-3">
+          <div className="rounded-2xl bg-[#0c1226] border border-white/10 p-4 space-y-1.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-400 flex items-center justify-center">
+              <Trophy size={16} />
+            </div>
+            <h2 className="text-xs font-black uppercase tracking-wide text-white">
+              Daily Tournaments
             </h2>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Join Battle Royale, Clash Squad, &amp; Lone Wolf matches and win real coins.
+            </p>
           </div>
 
-          <ol className="space-y-2.5 text-xs text-neutral-300">
-            <li className="flex items-start gap-2.5">
-              <CheckCircle2 size={15} className="text-emerald-400 shrink-0 mt-0.5" />
-              <span>Tap <strong>Download Official Android APK</strong> above to save <code>FX-Arena-Esports.apk</code>.</span>
-            </li>
-            <li className="flex items-start gap-2.5">
-              <CheckCircle2 size={15} className="text-emerald-400 shrink-0 mt-0.5" />
-              <span>Open the downloaded file and allow <strong>Install from this source</strong> if Android asks.</span>
-            </li>
-            <li className="flex items-start gap-2.5">
-              <CheckCircle2 size={15} className="text-emerald-400 shrink-0 mt-0.5" />
-              <span>Launch FX Arena Esports, register your Free Fire profile, and join your first custom room.</span>
-            </li>
-          </ol>
+          <div className="rounded-2xl bg-[#0c1226] border border-white/10 p-4 space-y-1.5">
+            <div className="w-8 h-8 rounded-xl bg-purple-500/15 text-purple-400 flex items-center justify-center">
+              <Key size={16} />
+            </div>
+            <h2 className="text-xs font-black uppercase tracking-wide text-white">
+              Private Room IDP
+            </h2>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Room ID &amp; Password alerts sent securely only to joined match players.
+            </p>
+          </div>
+
+          <div className="rounded-2xl bg-[#0c1226] border border-white/10 p-4 space-y-1.5">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
+              <Zap size={16} />
+            </div>
+            <h2 className="text-xs font-black uppercase tracking-wide text-white">
+              Fast Payouts
+            </h2>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Instant prize coin credit after result declaration &amp; easy UPI withdrawals.
+            </p>
+          </div>
+
+          <div className="rounded-2xl bg-[#0c1226] border border-white/10 p-4 space-y-1.5">
+            <div className="w-8 h-8 rounded-xl bg-blue-500/15 text-blue-400 flex items-center justify-center">
+              <ShieldCheck size={16} />
+            </div>
+            <h2 className="text-xs font-black uppercase tracking-wide text-white">
+              100% Fair Play
+            </h2>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Strict anti-hack &amp; mobile-only verification across every custom room.
+            </p>
+          </div>
         </section>
 
-        {/* FAQ Section for Rich Search Results */}
-        <section aria-labelledby="faq-heading" className="p-5 rounded-3xl bg-[#0b1020] border border-white/10 space-y-3">
-          <div className="flex items-center gap-2">
-            <HelpCircle size={16} className="text-amber-400" />
-            <h2 id="faq-heading" className="text-xs font-black uppercase tracking-wider text-white">
-              Frequently Asked Questions
-            </h2>
-          </div>
-          <div className="space-y-3 text-xs">
-            <div>
-              <h3 className="font-bold text-white">Is FX Arena Esports free to download?</h3>
-              <p className="text-neutral-400 mt-0.5">
-                Yes, downloading the FX Arena Esports Android app and creating a player account is 100% free.
-              </p>
+        {/* How to Install Card */}
+        <section className="rounded-3xl bg-[#0c1226] border border-white/10 p-5 space-y-3.5">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-indigo-500/15 text-indigo-400 flex items-center justify-center shrink-0">
+              <Smartphone size={16} />
             </div>
             <div>
-              <h3 className="font-bold text-white">Can I play without installing the APK?</h3>
-              <p className="text-neutral-400 mt-0.5">
-                Yes, you can register and use the full player experience directly in your browser using Web Login.
-              </p>
+              <h2 className="text-xs font-black uppercase tracking-wider text-white">
+                How to Install on Android
+              </h2>
+              <p className="text-[10px] text-slate-400">Simple 3-step installation guide</p>
             </div>
           </div>
 
-          <Link
-            to={isLoggedIn ? '/home' : '/signup'}
-            className="mt-2 inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-purple-400 hover:text-purple-300"
-          >
-            <Gamepad2 size={14} />
-            <span>{isLoggedIn ? 'Enter Tournament Arena' : 'Register as a Player Now'}</span>
-            <ArrowRight size={14} />
-          </Link>
+          <div className="space-y-2.5">
+            <div className="flex items-start gap-3 p-3 rounded-2xl bg-white/[0.03] border border-white/5">
+              <span className="w-6 h-6 rounded-lg bg-purple-600/25 text-purple-300 text-xs font-black flex items-center justify-center shrink-0">
+                1
+              </span>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Tap <span className="text-white font-bold">Download APK</span> above to save{' '}
+                <span className="text-white font-semibold">FX-Arena-Esports.apk</span> on your phone.
+              </p>
+            </div>
+            <div className="flex items-start gap-3 p-3 rounded-2xl bg-white/[0.03] border border-white/5">
+              <span className="w-6 h-6 rounded-lg bg-purple-600/25 text-purple-300 text-xs font-black flex items-center justify-center shrink-0">
+                2
+              </span>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Open the downloaded APK file and allow <span className="text-white font-bold">Install from Unknown Sources</span> if prompted.
+              </p>
+            </div>
+            <div className="flex items-start gap-3 p-3 rounded-2xl bg-white/[0.03] border border-white/5">
+              <span className="w-6 h-6 rounded-lg bg-purple-600/25 text-purple-300 text-xs font-black flex items-center justify-center shrink-0">
+                3
+              </span>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Launch <span className="text-white font-bold">FX Arena eSport</span>, create your account, and start playing!
+              </p>
+            </div>
+          </div>
         </section>
 
-        <footer className="text-center pt-2 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
-          FX Arena Esports • Official Player Portal &amp; APK Download
-        </footer>
+        {/* Web Login / Signup Actions */}
+        {!isLoggedIn && (
+          <section className="rounded-3xl bg-[#0c1226] border border-white/10 p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-black uppercase tracking-wider text-slate-300">
+                Play Directly on Web
+              </p>
+              <ArrowRight size={14} className="text-slate-500" />
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <Link
+                to={loginPath}
+                className="py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-black uppercase tracking-wider text-white flex items-center justify-center gap-2 transition-colors"
+              >
+                <LogIn size={15} />
+                <span>Login</span>
+              </Link>
+              <Link
+                to={signupPath}
+                className="py-3 px-4 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-xs font-black uppercase tracking-wider text-emerald-300 flex items-center justify-center gap-2 transition-colors"
+              >
+                <UserPlus size={15} />
+                <span>Register</span>
+              </Link>
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );

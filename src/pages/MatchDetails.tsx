@@ -16,11 +16,13 @@ import {
   Sparkles,
   Swords,
   Lock,
-  Key
+  Key,
+  Copy,
+  Check
 } from 'lucide-react';
 import { Page, Tournament, User } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, onSnapshot, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import SafeImage from '../components/SafeImage';
 
 interface MatchDetailsProps {
@@ -90,6 +92,12 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
   const [showAllJoiningsModal, setShowAllJoiningsModal] = useState(false);
   const [joiningsSearch, setJoiningsSearch] = useState('');
   const [showRoomDetailsModal, setShowRoomDetailsModal] = useState(false);
+  const [roomCreds, setRoomCreds] = useState<{ roomId?: string; roomPassword?: string; roomNotes?: string }>({});
+  const [loadingCreds, setLoadingCreds] = useState(false);
+  const [copiedIdpField, setCopiedIdpField] = useState<'id' | 'pass' | 'both' | null>(null);
+  const [showResultsModal, setShowResultsModal] = useState(false);
+  const [matchResultsData, setMatchResultsData] = useState<any>(null);
+  const [loadingResults, setLoadingResults] = useState(false);
   const [sectionRules, setSectionRules] = useState<string[]>([]);
 
   useEffect(() => {
@@ -347,13 +355,30 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
           </h1>
         </div>
 
-        {/* Room Info Quick Icon if user is joined and room info is ready */}
-        {isJoined && (matchData.roomId || matchData.roomPassword) && (
+        {/* View IDP Quick Button ONLY if user joined & room credentials exist */}
+        {isJoined && (matchData.hasRoomCredentials || isOngoing || matchData.roomId || matchData.roomPassword) && (
           <button
-            onClick={() => setShowRoomDetailsModal(true)}
-            className="p-1.5 bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 rounded-lg text-xs font-bold flex items-center gap-1"
+            onClick={async () => {
+              setCopiedIdpField(null);
+              setShowRoomDetailsModal(true);
+              setLoadingCreds(true);
+              try {
+                const cSnap = await getDoc(doc(db, 'matchCredentials', matchId));
+                if (cSnap.exists()) {
+                  setRoomCreds(cSnap.data() as any);
+                } else {
+                  setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
+                }
+              } catch {
+                setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
+              } finally {
+                setLoadingCreds(false);
+              }
+            }}
+            className="px-2.5 py-1.5 bg-amber-500/20 border border-amber-400/50 text-amber-300 rounded-lg text-[10px] font-black uppercase flex items-center gap-1"
           >
-            <Key size={14} />
+            <Key size={13} />
+            <span>IDP</span>
           </button>
         )}
       </header>
@@ -575,27 +600,60 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
       <div className="fixed bottom-0 inset-x-0 max-w-lg mx-auto p-4 bg-white/95 backdrop-blur-md border-t border-neutral-200 shadow-2xl z-40">
         {isCompleted ? (
           <button
-            disabled
-            className="w-full py-3.5 bg-neutral-400 text-white rounded-xl font-black text-sm uppercase tracking-wider cursor-not-allowed"
+            onClick={async () => {
+              setShowResultsModal(true);
+              setLoadingResults(true);
+              try {
+                const resSnap = await getDocs(query(collection(db, 'matchResults'), where('matchId', '==', matchId)));
+                if (!resSnap.empty) {
+                  setMatchResultsData(resSnap.docs[0].data());
+                } else {
+                  setMatchResultsData(null);
+                }
+              } catch {
+                setMatchResultsData(null);
+              } finally {
+                setLoadingResults(false);
+              }
+            }}
+            className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white rounded-xl font-black text-sm uppercase tracking-wider shadow-lg shadow-emerald-600/25 flex items-center justify-center gap-2"
           >
-            COMPLETED
+            <Trophy size={16} />
+            <span>VIEW MATCH RESULTS</span>
           </button>
         ) : isOngoing ? (
           <div className="flex gap-2">
-            {isJoined && (matchData.roomId || matchData.roomPassword) ? (
+            {isJoined ? (
               <button
-                onClick={() => setShowRoomDetailsModal(true)}
+                onClick={async () => {
+                  setCopiedIdpField(null);
+                  setShowRoomDetailsModal(true);
+                  setLoadingCreds(true);
+                  try {
+                    const cSnap = await getDoc(doc(db, 'matchCredentials', matchId));
+                    if (cSnap.exists()) {
+                      setRoomCreds(cSnap.data() as any);
+                    } else {
+                      setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
+                    }
+                  } catch {
+                    setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
+                  } finally {
+                    setLoadingCreds(false);
+                  }
+                }}
                 className="flex-1 py-3.5 bg-amber-500 hover:bg-amber-600 active:scale-98 text-white rounded-xl font-black text-xs sm:text-sm uppercase tracking-wider shadow-lg shadow-amber-500/25 flex items-center justify-center gap-1.5"
               >
                 <Key size={16} />
-                <span>VIEW ROOM ID & PASSWORD</span>
+                <span>VIEW IDP</span>
               </button>
             ) : (
               <button
                 disabled
-                className="w-full py-3.5 bg-red-600 text-white rounded-xl font-black text-sm uppercase tracking-wider cursor-not-allowed animate-pulse"
+                className="w-full py-3.5 bg-red-600/90 text-white rounded-xl font-black text-sm uppercase tracking-wider cursor-not-allowed flex items-center justify-center gap-2"
               >
-                MATCH STARTED
+                <Lock size={15} />
+                <span>MATCH STARTED (JOINED ONLY)</span>
               </button>
             )}
           </div>
@@ -608,12 +666,29 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
               <CheckCircle2 size={16} />
               <span>JOINED (VIEW SLOTS)</span>
             </button>
-            {(matchData.roomId || matchData.roomPassword) && (
+            {(matchData.hasRoomCredentials || matchData.roomId || matchData.roomPassword) && (
               <button
-                onClick={() => setShowRoomDetailsModal(true)}
-                className="px-4 py-3.5 bg-[#0a1835] hover:bg-[#111f3d] text-white rounded-xl font-black text-xs uppercase tracking-wider border border-white/10"
+                onClick={async () => {
+                  setCopiedIdpField(null);
+                  setShowRoomDetailsModal(true);
+                  setLoadingCreds(true);
+                  try {
+                    const cSnap = await getDoc(doc(db, 'matchCredentials', matchId));
+                    if (cSnap.exists()) {
+                      setRoomCreds(cSnap.data() as any);
+                    } else {
+                      setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
+                    }
+                  } catch {
+                    setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
+                  } finally {
+                    setLoadingCreds(false);
+                  }
+                }}
+                className="px-4 py-3.5 bg-[#0a1835] hover:bg-[#111f3d] text-amber-300 rounded-xl font-black text-xs uppercase tracking-wider border border-amber-500/30 flex items-center gap-1"
               >
-                <Key size={16} />
+                <Key size={15} />
+                <span>IDP</span>
               </button>
             )}
           </div>
@@ -742,7 +817,7 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
       </AnimatePresence>
 
       {/* ========================================================================= */}
-      {/* MODAL: ROOM ID & PASSWORD (FOR JOINED PLAYERS)                            */}
+      {/* MODAL: FULL-SCREEN CENTERED VIEW IDP (JOINED PLAYERS ONLY)                */}
       {/* ========================================================================= */}
       <AnimatePresence>
         {showRoomDetailsModal && (
@@ -750,54 +825,203 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-xs"
+            className="fixed inset-0 z-50 flex items-center justify-center p-5 bg-black/95 backdrop-blur-md"
             onClick={() => setShowRoomDetailsModal(false)}
           >
             <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
+              initial={{ scale: 0.92, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="w-full max-w-sm bg-[#0a1835] border border-[#1e3461] rounded-3xl p-6 text-white shadow-2xl relative text-center"
+              exit={{ scale: 0.92, opacity: 0 }}
+              className="w-full max-w-sm bg-[#0a1835] border border-[#1e3a6e] rounded-[2rem] p-6 text-white shadow-2xl relative text-center"
               onClick={(e) => e.stopPropagation()}
             >
               <button
                 onClick={() => setShowRoomDetailsModal(false)}
-                className="absolute top-4 right-4 p-1.5 text-neutral-400 hover:text-white bg-white/5 rounded-full"
+                className="absolute top-4 right-4 p-2 text-neutral-300 hover:text-white bg-white/10 rounded-xl"
               >
                 <X size={18} />
               </button>
 
-              <div className="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto mb-4">
+              <div className="w-14 h-14 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center mx-auto mb-3">
                 <Key size={26} />
               </div>
 
-              <h3 className="text-base font-black uppercase text-white mb-1">
-                Room Details
+              <h3 className="text-base font-black uppercase text-white mb-0.5">
+                Match Room IDP
               </h3>
-              <p className="text-xs text-neutral-400 mb-5">
-                Join the custom room in Free Fire before match time
+              <p className="text-[11px] font-bold text-cyan-300 uppercase tracking-wider mb-5 line-clamp-1">
+                {matchData.title}
               </p>
 
-              <div className="space-y-3 bg-[#050c1c] border border-white/10 rounded-2xl p-4 text-left text-xs mb-5">
-                <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                  <span className="text-neutral-400 font-bold uppercase text-[11px]">Room ID:</span>
-                  <span className="font-mono font-black text-amber-300 text-sm tracking-wider select-all">
-                    {matchData.roomId || 'Available 15 min before'}
-                  </span>
+              {loadingCreds ? (
+                <div className="py-10 flex flex-col items-center justify-center">
+                  <Loader2 size={28} className="text-amber-400 animate-spin mb-2" />
+                  <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Loading Room IDP...</p>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-neutral-400 font-bold uppercase text-[11px]">Room Password:</span>
-                  <span className="font-mono font-black text-emerald-300 text-sm tracking-wider select-all">
-                    {matchData.roomPassword || 'Available 15 min before'}
-                  </span>
+              ) : (
+                <div className="space-y-3.5 mb-5">
+                  <div className="p-4 bg-[#050c1c] border border-white/10 rounded-2xl">
+                    <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest mb-1">
+                      Room ID
+                    </p>
+                    <p className="font-mono font-black text-amber-300 text-2xl tracking-widest select-all">
+                      {roomCreds.roomId || 'PENDING'}
+                    </p>
+                    {roomCreds.roomId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(roomCreds.roomId || '');
+                          setCopiedIdpField('id');
+                          setTimeout(() => setCopiedIdpField(null), 2000);
+                        }}
+                        className={`mt-2.5 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
+                          copiedIdpField === 'id'
+                            ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                            : 'bg-white/10 hover:bg-white/20 text-white'
+                        }`}
+                      >
+                        {copiedIdpField === 'id' ? <Check size={13} /> : <Copy size={13} />}
+                        <span>{copiedIdpField === 'id' ? 'Copied ID!' : 'Copy Room ID'}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="p-4 bg-[#050c1c] border border-white/10 rounded-2xl">
+                    <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest mb-1">
+                      Password
+                    </p>
+                    <p className="font-mono font-black text-emerald-300 text-2xl tracking-widest select-all">
+                      {roomCreds.roomPassword || 'PENDING'}
+                    </p>
+                    {roomCreds.roomPassword && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(roomCreds.roomPassword || '');
+                          setCopiedIdpField('pass');
+                          setTimeout(() => setCopiedIdpField(null), 2000);
+                        }}
+                        className={`mt-2.5 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
+                          copiedIdpField === 'pass'
+                            ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                            : 'bg-white/10 hover:bg-white/20 text-white'
+                        }`}
+                      >
+                        {copiedIdpField === 'pass' ? <Check size={13} /> : <Copy size={13} />}
+                        <span>{copiedIdpField === 'pass' ? 'Copied Pass!' : 'Copy Password'}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
+              )}
+
+              <div className="space-y-2">
+                {roomCreds.roomId && roomCreds.roomPassword && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`Room ID: ${roomCreds.roomId} | Password: ${roomCreds.roomPassword}`);
+                      setCopiedIdpField('both');
+                      setTimeout(() => setCopiedIdpField(null), 2000);
+                    }}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2"
+                  >
+                    {copiedIdpField === 'both' ? <Check size={15} /> : <Copy size={15} />}
+                    <span>{copiedIdpField === 'both' ? 'Copied Both!' : 'Copy Both ID & Pass'}</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowRoomDetailsModal(false)}
+                  className="w-full py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-black text-xs uppercase tracking-wider"
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ========================================================================= */}
+      {/* MODAL: PUBLIC MATCH RESULTS VIEW                                          */}
+      {/* ========================================================================= */}
+      <AnimatePresence>
+        {showResultsModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-5 bg-black/90 backdrop-blur-sm"
+            onClick={() => setShowResultsModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              className="w-full max-w-sm bg-[#09152b] border border-[#1b3464] rounded-3xl p-6 text-white shadow-2xl relative flex flex-col max-h-[85vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                    <Trophy size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-tight">Match Results</h3>
+                    <p className="text-[10px] font-bold text-neutral-400 line-clamp-1">{matchData.title}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowResultsModal(false)}
+                  className="p-1.5 bg-white/10 text-neutral-300 rounded-xl hover:text-white"
+                >
+                  <X size={18} />
+                </button>
               </div>
 
+              {loadingResults ? (
+                <div className="py-16 flex flex-col items-center justify-center">
+                  <Loader2 size={28} className="text-emerald-400 animate-spin mb-2" />
+                  <p className="text-[10px] font-black uppercase text-neutral-400">Loading Standings...</p>
+                </div>
+              ) : matchResultsData?.results?.length > 0 ? (
+                <div className="flex-1 overflow-y-auto no-scrollbar space-y-2.5 pr-1">
+                  {[...matchResultsData.results]
+                    .sort((a: any, b: any) => (Number(b.winningAmount) || 0) - (Number(a.winningAmount) || 0))
+                    .map((res: any, idx: number) => (
+                      <div
+                        key={`${res.userId}_${res.slot || idx}`}
+                        className={`flex items-center justify-between p-3.5 rounded-xl border ${
+                          idx === 0 && (Number(res.winningAmount) || 0) > 0
+                            ? 'bg-amber-500/10 border-amber-500/30'
+                            : 'bg-[#0d1e3d] border-[#1b3464]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="w-7 h-7 rounded-lg bg-[#142850] flex items-center justify-center text-[10px] font-black">
+                            #{idx + 1}
+                          </span>
+                          <div>
+                            <p className="text-xs font-bold text-white">{res.ign || res.username}</p>
+                            <p className="text-[9px] text-neutral-400">@{res.username}</p>
+                          </div>
+                        </div>
+                        <span className={`text-xs font-black ${(Number(res.winningAmount) || 0) > 0 ? 'text-emerald-400' : 'text-neutral-500'}`}>
+                          {(Number(res.winningAmount) || 0) > 0 ? `+${res.winningAmount} Coins` : '0 Coins'}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <div className="py-12 text-center text-xs text-neutral-400">Results have not been posted yet.</div>
+              )}
+
               <button
-                onClick={() => setShowRoomDetailsModal(false)}
-                className="w-full py-3 bg-[#45c4a0] hover:bg-[#3db392] text-white rounded-xl font-black text-xs uppercase tracking-wider"
+                onClick={() => setShowResultsModal(false)}
+                className="mt-4 w-full py-3 bg-[#122347] hover:bg-[#19305e] text-white rounded-xl text-xs font-bold uppercase tracking-wider"
               >
-                GOT IT
+                Close
               </button>
             </motion.div>
           </motion.div>

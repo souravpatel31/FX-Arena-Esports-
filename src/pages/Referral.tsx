@@ -6,6 +6,7 @@ import { Capacitor } from '@capacitor/core';
 import { Page, User } from '../types';
 import { db } from '../lib/firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
+import { buildAppSharePayload } from '../utils/shareLinks';
 
 interface ReferralPageProps {
   user: User;
@@ -27,34 +28,7 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
   }, []);
 
   const referralCode = user.username;
-  const envApkUrl = (import.meta.env.VITE_APK_DOWNLOAD_URL || '').trim();
-  const envSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
-  const rawApkUrl = appSettings?.referral?.apkDownloadUrl?.trim() || '';
-  const rawBaseUrl = appSettings?.referral?.baseUrl?.replace(/\/$/, '').trim() || '';
-  const isInternalHost = (url: string) =>
-    !url ||
-    url.includes('localhost') ||
-    url.includes('127.0.0.1') ||
-    url.includes('ais-dev') ||
-    url.includes('ais-pre') ||
-    url.includes('secret-scanner-g7cvm.web.app');
-
-  const resolvedApkUrl = !isInternalHost(rawApkUrl) ? rawApkUrl : envApkUrl;
-  const resolvedBaseUrl = !isInternalHost(rawBaseUrl) ? rawBaseUrl : envSiteUrl;
-
-  const publicShareUrl =
-    resolvedApkUrl || (resolvedBaseUrl ? `${resolvedBaseUrl}/signup?ref=${encodeURIComponent(referralCode)}` : '');
-  const shareText = publicShareUrl
-    ? `Join FX Arena Esports & win daily Free Fire tournament rewards! Download the app & register with my Referral Code: ${referralCode} to get ₹${
-        appSettings?.referral?.newUserReward === undefined || appSettings?.referral?.newUserReward === 10
-          ? 2
-          : appSettings?.referral?.newUserReward
-      } bonus!`
-    : `Join FX Arena Esports & win daily Free Fire tournament rewards! Register inside the app using my Referral Code: ${referralCode} to get ₹${
-        appSettings?.referral?.newUserReward === undefined || appSettings?.referral?.newUserReward === 10
-          ? 2
-          : appSettings?.referral?.newUserReward
-      } bonus!`;
+  const sharePayload = buildAppSharePayload(appSettings, referralCode);
 
   const handleCopy = async (text: string, feedbackMsg = 'Copied to clipboard!') => {
     try {
@@ -84,15 +58,13 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
   const newUserReward = rawNewUserReward === undefined || rawNewUserReward === 10 ? 2 : rawNewUserReward;
 
   const handleShare = async () => {
-    const fullCopyPayload = publicShareUrl ? `${shareText}\n${publicShareUrl}` : shareText;
-
     if (Capacitor.isNativePlatform()) {
       try {
         await Share.share({
-          title: 'FX Arena Esports – Invite & Earn',
-          text: shareText,
-          ...(publicShareUrl ? { url: publicShareUrl } : {}),
-          dialogTitle: 'Share FX Arena Esports',
+          title: sharePayload.title,
+          text: sharePayload.text,
+          url: sharePayload.url,
+          dialogTitle: sharePayload.title,
         });
         return;
       } catch (err: any) {
@@ -104,9 +76,9 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'FX Arena Esports Referral',
-          text: shareText,
-          ...(publicShareUrl ? { url: publicShareUrl } : {}),
+          title: sharePayload.title,
+          text: sharePayload.text,
+          url: sharePayload.url,
         });
         return;
       } catch (err: any) {
@@ -114,7 +86,7 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
       }
     }
 
-    await handleCopy(fullCopyPayload, 'Invite message & code copied!');
+    await handleCopy(sharePayload.copyText, 'App link copied!');
   };
 
   return (

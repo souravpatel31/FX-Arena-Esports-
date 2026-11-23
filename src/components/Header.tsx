@@ -19,7 +19,7 @@ export default function Header({ user, onPageChange }: HeaderProps) {
           >
             <SafeImage 
               src={APP_LOGO_URL} 
-              alt="FX Arena Logo" 
+              alt="FX Arena eSport Logo" 
               className="w-full h-full object-cover"
             />
           </div>
@@ -29,7 +29,7 @@ export default function Header({ user, onPageChange }: HeaderProps) {
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" />
             </div>
             <h1 className="text-xl font-bold tracking-tighter uppercase leading-none text-white">
-              FX Arena <span className="text-purple-500">Esports</span>
+              FX Arena <span className="text-purple-500">eSport</span>
             </h1>
           </div>
         </div>

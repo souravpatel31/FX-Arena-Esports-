@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Bell, Send, Trash2, Check, Loader2, Trophy, Users, 
-  User as UserIcon, CheckCircle2, ChevronDown, Sparkles
+  User as UserIcon, CheckCircle2, ChevronDown, Sparkles, AlertCircle
 } from 'lucide-react';
 import { 
   Page, Tournament, User, AppNotification, NotificationType, NotificationAudience 
@@ -29,6 +29,7 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
 
   const [isSending, setIsSending] = useState(false);
   const [successToast, setSuccessToast] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [historyNotifications, setHistoryNotifications] = useState<AppNotification[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
@@ -75,6 +76,7 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
       return;
     }
 
+    setErrorMsg(null);
     setIsSending(true);
 
     try {
@@ -115,7 +117,12 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
       setTimeout(() => setSuccessToast(null), 3500);
     } catch (err: any) {
       console.error('Error sending notification:', err);
-      alert('Failed to send notification: ' + (err?.message || 'Unknown error'));
+      const rawMsg = String(err?.message || 'Unknown error');
+      const friendly = rawMsg.toLowerCase().includes('permission')
+        ? 'Permission denied. Please verify your email or ask Super Admin to tap "Sync Staff" in Users tab.'
+        : 'Failed to send notification: ' + rawMsg;
+      setErrorMsg(friendly);
+      alert(friendly);
     } finally {
       setIsSending(false);
     }
@@ -123,10 +130,14 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
 
   const handleDelete = async (id?: string) => {
     if (!id) return;
+    setErrorMsg(null);
     try {
       await deleteDoc(doc(db, 'notifications', id));
-    } catch (e) {
+    } catch (e: any) {
       console.error('Delete error:', e);
+      const msg = e?.message || 'Failed to delete notification.';
+      setErrorMsg(msg);
+      alert(msg);
     }
   };
 
@@ -143,7 +154,7 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
 
   return (
     <div className="space-y-6">
-      {/* Toast Alert */}
+      {/* Toast Alerts */}
       <AnimatePresence>
         {successToast && (
           <motion.div
@@ -156,7 +167,21 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
               <CheckCircle2 size={16} />
               <span>{successToast}</span>
             </div>
-            <button onClick={() => setSuccessToast(null)} className="text-white/80 hover:text-white font-bold">&times;</button>
+            <button type="button" onClick={() => setSuccessToast(null)} className="text-white/80 hover:text-white font-bold">&times;</button>
+          </motion.div>
+        )}
+        {errorMsg && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.98 }}
+            className="p-3.5 bg-red-600/20 border border-red-500/40 text-red-200 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg"
+          >
+            <div className="flex items-center gap-2">
+              <AlertCircle size={16} className="text-red-400 shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+            <button type="button" onClick={() => setErrorMsg(null)} className="text-red-300 hover:text-white font-bold">&times;</button>
           </motion.div>
         )}
       </AnimatePresence>

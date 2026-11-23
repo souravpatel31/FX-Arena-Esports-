@@ -159,7 +159,7 @@ export default async function handler(req: any, res: any) {
       customer_details: {
         customer_id: String(userId),
         customer_phone: customerPhone || "9999999999",
-        customer_name: customerName || "FX Arena Esports User",
+        customer_name: customerName || "FX Arena eSport User",
         customer_email: customerEmail || "user@fxarenaesports.com"
       },
       order_meta: {

@@ -13,14 +13,21 @@ import {
   ShieldAlert,
   LogOut,
   ChevronRight,
-  X
+  Download,
+  Share2,
+  ClipboardCheck
 } from 'lucide-react';
+import { Share } from '@capacitor/share';
+import { Capacitor } from '@capacitor/core';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { Page, User } from '../types';
 import SupportModal from '../components/SupportModal';
 import RulesModal from '../components/RulesModal';
 import MyOrdersModal from '../components/MyOrdersModal';
-import { isAuthorizedAdmin } from '../utils/adminAuth';
+import { isAuthorizedAdmin, isStaffUser } from '../utils/adminAuth';
 import { APP_LOGO_URL } from '../utils/assetUrl';
+import { buildAppSharePayload } from '../utils/shareLinks';
 
 interface ProfilePageProps {
   user: User;
@@ -33,9 +40,19 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
   const [isRulesOpen, setIsRulesOpen] = useState(false);
   const [isOrdersOpen, setIsOrdersOpen] = useState(false);
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
+  const [appSettings, setAppSettings] = useState<any>(null);
+  const [shareToast, setShareToast] = useState<string | null>(null);
   const [pushEnabled, setPushEnabled] = useState(() => {
     return localStorage.getItem('khelgalli_push_notifications') !== 'false';
   });
+
+  useEffect(() => {
+    getDoc(doc(db, 'appSettings', 'referral_support'))
+      .then((snap) => {
+        if (snap.exists()) setAppSettings(snap.data());
+      })
+      .catch(() => {});
+  }, []);
 
   const handleTogglePush = () => {
     setPushEnabled((prev) => {
@@ -45,7 +62,54 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
     });
   };
 
+  const handleShareAppFromSettings = async () => {
+    const payload = buildAppSharePayload(appSettings, user?.username);
+    if (Capacitor.isNativePlatform()) {
+      try {
+        await Share.share({
+          title: payload.title,
+          text: payload.text,
+          url: payload.url,
+          dialogTitle: payload.title,
+        });
+        return;
+      } catch (err: any) {
+        const msg = String(err?.message || '').toLowerCase();
+        if (msg.includes('cancel') || err?.name === 'AbortError') return;
+      }
+    }
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: payload.title,
+          text: payload.text,
+          url: payload.url,
+        });
+        return;
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(payload.copyText);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = payload.copyText;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    setShareToast('App link copied!');
+    setTimeout(() => setShareToast(null), 2500);
+  };
+
   const isAdminUser = isAuthorizedAdmin(user);
+  const isStaffMember = isStaffUser(user);
 
   const totalBalance =
     (user?.wallet?.deposit || 0) + (user?.wallet?.winnings || 0) + (user?.wallet?.bonus || 0);
@@ -68,7 +132,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
             <div className="w-11 h-11 rounded-full bg-gradient-to-b from-[#1b2b48] to-[#0a1220] p-0.5 border border-[#2b4475] shadow-lg flex items-center justify-center overflow-hidden">
               <img
                 src={APP_LOGO_URL}
-                alt="FX Arena"
+                alt="FX Arena eSport"
                 className="w-full h-full rounded-full object-cover"
               />
             </div>
@@ -111,7 +175,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
           >
             <img
               src={APP_LOGO_URL}
-              alt="FX Arena Esports"
+              alt="FX Arena eSport"
               className="w-full h-full rounded-full object-cover relative z-10"
             />
           </motion.div>
@@ -229,7 +293,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
 
           {/* Card 4: My Matches */}
           <button
-            onClick={() => onPageChange(Page.TOURNAMENTS)}
+            onClick={() => onPageChange(Page.TOURNAMENTS, '?my=1')}
             className="w-full bg-white hover:bg-slate-50 active:bg-slate-100 rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between border border-slate-200/90 shadow-xs group transition-all"
           >
             <div className="flex items-center gap-3.5">
@@ -323,7 +387,43 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
             <ChevronRight size={18} className="text-slate-700 group-hover:translate-x-0.5 transition-transform" />
           </button>
 
-          {/* Card 10: Admin Panel (if admin) */}
+          {/* Card 9b: Download Official APK */}
+          <button
+            onClick={() => onPageChange(Page.DOWNLOAD)}
+            className="w-full bg-white hover:bg-slate-50 active:bg-slate-100 rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between border border-slate-200/90 shadow-xs group transition-all"
+          >
+            <div className="flex items-center gap-3.5">
+              <div className="text-purple-600">
+                <Download size={20} className="stroke-[2.2]" />
+              </div>
+              <span className="text-sm font-bold text-[#0f172a] tracking-tight">
+                Download Official APK
+              </span>
+            </div>
+            <ChevronRight size={18} className="text-slate-700 group-hover:translate-x-0.5 transition-transform" />
+          </button>
+
+          {/* Card 9c: Share App */}
+          <button
+            onClick={handleShareAppFromSettings}
+            className="w-full bg-white hover:bg-slate-50 active:bg-slate-100 rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between border border-slate-200/90 shadow-xs group transition-all"
+          >
+            <div className="flex items-center gap-3.5">
+              <div className="text-emerald-600">
+                <Share2 size={20} className="stroke-[2.2]" />
+              </div>
+              <span className="text-sm font-bold text-[#0f172a] tracking-tight">
+                Share FX Arena eSport App
+              </span>
+            </div>
+            {shareToast ? (
+              <span className="text-[11px] font-black text-emerald-600">{shareToast}</span>
+            ) : (
+              <ChevronRight size={18} className="text-slate-700 group-hover:translate-x-0.5 transition-transform" />
+            )}
+          </button>
+
+          {/* Card 10: Admin Panel (if super admin) */}
           {isAdminUser && (
             <button
               onClick={() => onPageChange(Page.ADMIN)}
@@ -338,6 +438,24 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
                 </span>
               </div>
               <ChevronRight size={18} className="text-blue-600 group-hover:translate-x-0.5 transition-transform" />
+            </button>
+          )}
+
+          {/* Card 10b: Staff Control Panel (if staff account) */}
+          {isStaffMember && (
+            <button
+              onClick={() => onPageChange(Page.ADMIN)}
+              className="w-full bg-purple-50/80 hover:bg-purple-100/80 active:bg-purple-200/80 rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between border border-purple-200 shadow-xs group transition-all"
+            >
+              <div className="flex items-center gap-3.5">
+                <div className="text-purple-600">
+                  <ClipboardCheck size={20} className="stroke-[2.2]" />
+                </div>
+                <span className="text-sm font-bold text-purple-900 tracking-tight">
+                  Staff Control Panel
+                </span>
+              </div>
+              <ChevronRight size={18} className="text-purple-600 group-hover:translate-x-0.5 transition-transform" />
             </button>
           )}
 
@@ -360,7 +478,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
 
         {/* Footer info */}
         <p className="mt-8 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-          FX Arena Esports • v3.2.0
+          FX Arena eSport • v3.2.0
         </p>
       </div>
 
@@ -400,7 +518,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
               <div className="w-12 h-12 rounded-full bg-red-100 text-red-600 flex items-center justify-center mx-auto mb-3">
                 <LogOut size={22} />
               </div>
-              <h3 className="text-base font-bold text-slate-900 mb-1">Log Out of FX Arena Esports?</h3>
+              <h3 className="text-base font-bold text-slate-900 mb-1">Log Out of FX Arena eSport?</h3>
               <p className="text-xs text-slate-500 mb-5">
                 Are you sure you want to log out of your gaming account?
               </p>

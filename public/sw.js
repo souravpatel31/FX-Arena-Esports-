@@ -1,4 +1,4 @@
-// Service Worker for FX Arena Esports Mobile Notifications
+// Service Worker for FX Arena eSport Mobile Notifications
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -14,7 +14,7 @@ self.addEventListener('message', (event) => {
     const { title, body, icon, badge, data, tag } = event.data;
     
     const options = {
-      body: body || 'You have a new update from FX Arena Esports',
+      body: body || 'You have a new update from FX Arena eSport',
       icon: icon || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
       badge: badge || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
       vibrate: [200, 100, 200, 100, 200],
@@ -28,14 +28,14 @@ self.addEventListener('message', (event) => {
       ]
     };
 
-    self.registration.showNotification(title || 'FX Arena Esports Alert', options);
+    self.registration.showNotification(title || 'FX Arena eSport Alert', options);
   }
 });
 
 // Handle push events (for background push notifications)
 self.addEventListener('push', (event) => {
   let notifData = {
-    title: 'FX Arena Esports Notification',
+    title: 'FX Arena eSport Notification',
     body: 'New match update available',
     icon: '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
     badge: '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',

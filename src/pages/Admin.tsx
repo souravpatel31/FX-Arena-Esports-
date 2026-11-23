@@ -15,13 +15,14 @@ import { formatMatchTime } from '../utils/dateUtils';
 import SafeImage from '../components/SafeImage';
 import { uploadOriginalImage } from '../utils/imageCompressor';
 import AdminNotificationsTab from '../components/AdminNotificationsTab';
+import { isAuthorizedAdmin, isStaffUser, hasControlPanelAccess, STAFF_EMAILS } from '../utils/adminAuth';
 
 import { 
   collection, doc, onSnapshot, updateDoc, deleteDoc,
   addDoc, serverTimestamp, runTransaction, writeBatch,
-  query, where, orderBy, getDocs, increment, setDoc
+  query, where, orderBy, getDocs, getDoc, increment, setDoc
 } from 'firebase/firestore';
-import { sendPasswordResetEmail } from 'firebase/auth';
+import { sendPasswordResetEmail, sendEmailVerification } from 'firebase/auth';
 import { useModalBackHandler } from '../hooks/useModalBackHandler';
 
 interface AdminPageProps {
@@ -132,7 +133,11 @@ const RULE_PRESETS: Record<string, { title: string; category: string; rules: str
 };
 
 export default function AdminPage({ onPageChange }: AdminPageProps) {
-  const [activeTab, setActiveTab] = useState<AdminTab>(AdminTab.DASHBOARD);
+  const isFullAdmin = isAuthorizedAdmin(auth.currentUser);
+  const isStaffRole = isStaffUser(auth.currentUser);
+  const [activeTab, setActiveTab] = useState<AdminTab>(() =>
+    isStaffUser(auth.currentUser) ? AdminTab.MATCHES : AdminTab.DASHBOARD
+  );
   const [users, setUsers] = useState<User[]>([]);
   const [matches, setMatches] = useState<Tournament[]>([]);
   const [transactions, setTransactions] = useState<any[]>([]);
@@ -142,8 +147,12 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState<{ isOpen: boolean, matchId: string }>({ isOpen: false, matchId: '' });
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [selectedMatchResults, setSelectedMatchResults] = useState<Tournament | null>(null);
-  const [playerResults, setPlayerResults] = useState<Record<string, number>>({}); // userId -> value (kills or rank)
-  const [playerPositionResults, setPlayerPositionResults] = useState<Record<string, number>>({}); // userId -> rank (for PER KILL matches)
+  const [playerWinningCoins, setPlayerWinningCoins] = useState<Record<string, string>>({}); // direct custom coins entered by admin
+  const [playerResults, setPlayerResults] = useState<Record<string, number>>({}); // optional kills or rank
+  const [playerPositionResults, setPlayerPositionResults] = useState<Record<string, number>>({}); // optional position rank
+  const [matchCredentialsMap, setMatchCredentialsMap] = useState<Record<string, { roomId?: string; roomPassword?: string; roomNotes?: string }>>({});
+  const [needsAdminVerification, setNeedsAdminVerification] = useState(false);
+  const [verificationFeedback, setVerificationFeedback] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
@@ -199,7 +208,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     qrImageUrl: '',
     amountQrs: {} as Record<string, string>,
     upiId: '',
-    merchantName: 'FX Arena Esports',
+    merchantName: 'FX Arena eSport',
     isActive: true
   });
   const [selectedQrAmountKey, setSelectedQrAmountKey] = useState<string>('default');
@@ -246,91 +255,144 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
   // Real-time listeners
   useEffect(() => {
-    // Auth check
-    const email = (auth.currentUser?.email || '').toLowerCase();
-    const uid = auth.currentUser?.uid;
-    const isAdminUser = email === 'souravpatel312@gmail.com' ||
-                       email === 'mahendrathakur9009@gmail.com' || 
-                       email === 'qupagaming@gmail.com' || 
-                       email === 'mahendrar9009@gmail.com' ||
-                       uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1';
+    const currentUser = auth.currentUser;
+    const uid = currentUser?.uid;
+    const isFull = isAuthorizedAdmin(currentUser);
+    const isStaff = isStaffUser(currentUser);
 
-    if (!isAdminUser) {
+    if (!hasControlPanelAccess(currentUser)) {
       onPageChange(Page.HOME);
       return;
     }
 
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'));
+    if (isStaff) {
+      setActiveTab((prev) =>
+        prev === AdminTab.MATCHES || prev === AdminTab.NOTIFICATIONS ? prev : AdminTab.MATCHES
+      );
+    }
 
-    const unsubMatches = onSnapshot(collection(db, 'matches'), (snapshot) => {
-      setMatches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Tournament)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'matches'));
-
-    const unsubTrans = onSnapshot(query(collection(db, 'transactions'), orderBy('createdAt', 'desc')), (snapshot) => {
-      setTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'transactions'));
-
-    const unsubRules = onSnapshot(collection(db, 'gameRules'), (snapshot) => {
-      const docsMap: Record<string, any> = {};
-      snapshot.docs.forEach(docSnap => {
-        const data = docSnap.data();
-        docsMap[docSnap.id] = {
-          id: docSnap.id,
-          title: data.title || data.section || data.type || docSnap.id.replace(/_/g, ' '),
-          category: data.category || data.title || 'General',
-          section: data.section || data.title || docSnap.id,
-          rules: data.rules || [],
-          updatedAt: data.updatedAt
-        };
-      });
-      setGameRulesDocs(docsMap);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'gameRules'));
-
-    const unsubModes = onSnapshot(collection(db, 'gameModes'), (snapshot) => {
-      setGameModesList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'gameModes'));
-
-    const unsubSettings = onSnapshot(doc(db, 'appSettings', 'referral_support'), (snapshot) => {
-      if (snapshot.exists()) {
-        setAppSettings(snapshot.data());
+    // Check if admin/staff needs email verification for Firestore rule writes
+    const checkAdminWriteStatus = async () => {
+      try {
+        if (uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1' || currentUser?.emailVerified) {
+          setNeedsAdminVerification(false);
+          return;
+        }
+        if (isStaff && uid) {
+          const staffDoc = await getDoc(doc(db, 'staff', uid));
+          setNeedsAdminVerification(!staffDoc.exists());
+          return;
+        }
+        if (uid) {
+          const adminDoc = await getDoc(doc(db, 'admins', uid));
+          setNeedsAdminVerification(!adminDoc.exists());
+        }
+      } catch {
+        setNeedsAdminVerification(!currentUser?.emailVerified && uid !== 'XoXyXcnrlzOaMIKKolXnU3mT9xn1');
       }
-    }, (err) => handleFirestoreError(err, OperationType.GET, 'appSettings/referral_support'));
+    };
+    checkAdminWriteStatus();
 
-    const unsubBanners = onSnapshot(query(collection(db, 'banners'), orderBy('order', 'asc')), (snapshot) => {
-      setBanners(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Banner)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'banners'));
+    const unsubs: (() => void)[] = [];
 
-    const unsubGateways = onSnapshot(collection(db, 'paymentSettings'), (snapshot) => {
-      setPaymentGateways(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PaymentGateway)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'paymentSettings'));
+    unsubs.push(
+      onSnapshot(collection(db, 'users'), (snapshot) => {
+        setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User)));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'))
+    );
 
-    const unsubQr = onSnapshot(doc(db, 'appSettings', 'payment_qr'), (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        const cfg = data.paymentQr || data;
-        setQrForm({
-          qrImageUrl: cfg.qrImageUrl || '',
-          amountQrs: (cfg.amountQrs && typeof cfg.amountQrs === 'object') ? cfg.amountQrs : {},
-          upiId: cfg.upiId || '',
-          merchantName: cfg.merchantName || 'FX Arena Esports',
-          isActive: cfg.isActive !== false
+    unsubs.push(
+      onSnapshot(collection(db, 'matches'), (snapshot) => {
+        setMatches(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Tournament)));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'matches'))
+    );
+
+    unsubs.push(
+      onSnapshot(collection(db, 'matchCredentials'), (snapshot) => {
+        const credMap: Record<string, { roomId?: string; roomPassword?: string; roomNotes?: string }> = {};
+        snapshot.docs.forEach((docSnap) => {
+          const d = docSnap.data();
+          credMap[docSnap.id] = {
+            roomId: d.roomId || '',
+            roomPassword: d.roomPassword || '',
+            roomNotes: d.roomNotes || '',
+          };
         });
-      }
-    }, (err) => handleFirestoreError(err, OperationType.GET, 'appSettings/payment_qr'));
+        setMatchCredentialsMap(credMap);
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'matchCredentials'))
+    );
+
+    if (isFull) {
+      unsubs.push(
+        onSnapshot(query(collection(db, 'transactions'), orderBy('createdAt', 'desc')), (snapshot) => {
+          setTransactions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        }, (err) => handleFirestoreError(err, OperationType.LIST, 'transactions'))
+      );
+
+      unsubs.push(
+        onSnapshot(collection(db, 'gameRules'), (snapshot) => {
+          const docsMap: Record<string, any> = {};
+          snapshot.docs.forEach(docSnap => {
+            const data = docSnap.data();
+            docsMap[docSnap.id] = {
+              id: docSnap.id,
+              title: data.title || data.section || data.type || docSnap.id.replace(/_/g, ' '),
+              category: data.category || data.title || 'General',
+              section: data.section || data.title || docSnap.id,
+              rules: data.rules || [],
+              updatedAt: data.updatedAt
+            };
+          });
+          setGameRulesDocs(docsMap);
+        }, (err) => handleFirestoreError(err, OperationType.LIST, 'gameRules'))
+      );
+
+      unsubs.push(
+        onSnapshot(collection(db, 'gameModes'), (snapshot) => {
+          setGameModesList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        }, (err) => handleFirestoreError(err, OperationType.LIST, 'gameModes'))
+      );
+
+      unsubs.push(
+        onSnapshot(doc(db, 'appSettings', 'referral_support'), (snapshot) => {
+          if (snapshot.exists()) {
+            setAppSettings(snapshot.data());
+          }
+        }, (err) => handleFirestoreError(err, OperationType.GET, 'appSettings/referral_support'))
+      );
+
+      unsubs.push(
+        onSnapshot(query(collection(db, 'banners'), orderBy('order', 'asc')), (snapshot) => {
+          setBanners(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Banner)));
+        }, (err) => handleFirestoreError(err, OperationType.LIST, 'banners'))
+      );
+
+      unsubs.push(
+        onSnapshot(collection(db, 'paymentSettings'), (snapshot) => {
+          setPaymentGateways(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PaymentGateway)));
+        }, (err) => handleFirestoreError(err, OperationType.LIST, 'paymentSettings'))
+      );
+
+      unsubs.push(
+        onSnapshot(doc(db, 'appSettings', 'payment_qr'), (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            const cfg = data.paymentQr || data;
+            setQrForm({
+              qrImageUrl: cfg.qrImageUrl || '',
+              amountQrs: (cfg.amountQrs && typeof cfg.amountQrs === 'object') ? cfg.amountQrs : {},
+              upiId: cfg.upiId || '',
+              merchantName: cfg.merchantName || 'FX Arena eSport',
+              isActive: cfg.isActive !== false
+            });
+          }
+        }, (err) => handleFirestoreError(err, OperationType.GET, 'appSettings/payment_qr'))
+      );
+    }
 
     setLoading(false);
     return () => {
-      unsubUsers();
-      unsubMatches();
-      unsubTrans();
-      unsubRules();
-      unsubModes();
-      unsubSettings();
-      unsubBanners();
-      unsubGateways();
-      unsubQr();
+      unsubs.forEach((unsub) => unsub());
     };
   }, [onPageChange]);
 
@@ -338,7 +400,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const totalUsers = users.length;
   const totalMatches = matches.length;
   const totalJoinedPlayers = matches.reduce((acc, m) => acc + (m.playersCount || 0), 0);
-  const pendingTransactionsCount = transactions.filter(t => t.status === 'pending').length;
+  const pendingTransactionsCount = transactions.filter(t => String(t.status || '').toLowerCase().trim() === 'pending').length;
   const totalDeposits = transactions
     .filter(t => t.type === 'deposit' && (t.status === 'completed' || !t.status))
     .reduce((acc, t) => acc + (t.amount || 0), 0);
@@ -479,6 +541,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
   const handleDeclareResult = (match: Tournament) => {
     setSelectedMatchResults(match);
+    setPlayerWinningCoins({});
     setPlayerResults({});
     setPlayerPositionResults({});
     setIsResultModalOpen(true);
@@ -508,104 +571,40 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
        console.error("No valid match selected for results declaration");
        return;
     }
-    
-    console.log("Submitting results for matchId:", selectedMatchResults.id);
+
     setIsProcessing(true);
 
     try {
       await runTransaction(db, async (tx) => {
         const matchId = selectedMatchResults.id!;
         const players = selectedMatchResults.players || [];
-        
-        // 1. Collect all User References and Snapshots (READS)
-        const userDocs: { ref: any, snap: any, userId: string, player: any }[] = [];
+
+        // 1. Collect all unique User References and Snapshots (READS)
+        const userSnapMap = new Map<string, { ref: any; snap: any }>();
         for (const player of players) {
           const userId = player.userId;
-          if (!userId || typeof userId !== 'string') continue;
+          if (!userId || typeof userId !== 'string' || userSnapMap.has(userId)) continue;
           const userRef = doc(db, 'users', userId);
           const snap = await tx.get(userRef);
-          userDocs.push({ ref: userRef, snap, userId, player });
-        }
-        
-        // 2. Process and Apply Updates (WRITES)
-        for (const { ref: userRef, snap: uSnap, userId, player } of userDocs) {
-          if (uSnap.exists()) {
-            let winningAmount = 0;
-
-            if (selectedMatchResults.section === 'Battle Royale') {
-              if (selectedMatchResults.prizeType === 'perKill') {
-                const playerKey = `${player.userId}_${player.slot}`;
-                const kills = playerResults[playerKey] || 0;
-                const killsWinning = kills * (selectedMatchResults.perKillAmount || 0);
-                const rank = playerPositionResults[playerKey] || 0;
-                const positionWinning = selectedMatchResults.positionPrizeDistribution?.[rank] || 0;
-                winningAmount = killsWinning + positionWinning;
-              } else if (selectedMatchResults.prizeType === 'survival') {
-                const rank = playerResults[`${player.userId}_${player.slot}`] || 0;
-                winningAmount = selectedMatchResults.prizeDistribution?.[rank] || 0;
-              }
-            } else {
-              // For Clash Squad / Lone Wolf, if rank is 1, give them the prize pool
-              const rank = playerResults[`${player.userId}_${player.slot}`] || 0;
-              if (rank === 1) {
-                winningAmount = selectedMatchResults.prizePool || 0;
-              }
-            }
-
-            // Prepare updates object
-            const updates: any = {
-              'stats.matchesPlayed': increment(1)
-            };
-
-            if (winningAmount > 0) {
-              updates["wallet.winnings"] = increment(winningAmount);
-              updates['stats.totalWinnings'] = increment(winningAmount);
-
-              // Create Transaction record
-              const transCol = collection(db, 'transactions');
-              const transRef = doc(transCol);
-              tx.set(transRef, {
-                userId,
-                type: 'win',
-                amount: winningAmount,
-                matchId: matchId,
-                status: 'completed',
-                title: `WON IN MATCH: ${selectedMatchResults.displayId || '#000'}`,
-                createdAt: serverTimestamp()
-              });
-            }
-            
-            // Add kills if applicable
-            if (selectedMatchResults.prizeType === 'perKill') {
-               updates['stats.totalKills'] = increment(playerResults[`${player.userId}_${player.slot}`] || 0);
-            }
-
-            tx.update(userRef, updates);
-          }
+          userSnapMap.set(userId, { ref: userRef, snap });
         }
 
-        // Mark match as completed and save results summary
-        const matchRef = doc(db, 'matches', matchId);
-        
+        // 2. Aggregate payouts and stats per user (handles multi-slot joins cleanly)
+        const perUserTotals = new Map<string, { winningAmount: number; kills: number; wonMatch: boolean }>();
         const resultsArray = players.map(player => {
           const playerKey = `${player.userId}_${player.slot}`;
-          const score = playerResults[playerKey] || 0;
-          let winningAmount = 0;
+          const rawCoins = Number(playerWinningCoins[playerKey] ?? 0);
+          const winningAmount = Number.isFinite(rawCoins) && rawCoins > 0 ? Math.round(rawCoins * 100) / 100 : 0;
+          const killsOrRank = Number(playerResults[playerKey] || 0) || 0;
+          const posRank = Number(playerPositionResults[playerKey] || 0) || 0;
 
-          if (selectedMatchResults.section === 'Battle Royale') {
-            if (selectedMatchResults.prizeType === 'perKill') {
-              const kills = score;
-              const killsWinning = kills * (selectedMatchResults.perKillAmount || 0);
-              const rank = playerPositionResults[playerKey] || 0;
-              const positionWinning = selectedMatchResults.positionPrizeDistribution?.[rank] || 0;
-              winningAmount = killsWinning + positionWinning;
-            } else if (selectedMatchResults.prizeType === 'survival') {
-              winningAmount = selectedMatchResults.prizeDistribution?.[score] || 0;
-            }
-          } else {
-            if (score === 1) {
-              winningAmount = selectedMatchResults.prizePool || 0;
-            }
+          if (player.userId && typeof player.userId === 'string') {
+            const prev = perUserTotals.get(player.userId) || { winningAmount: 0, kills: 0, wonMatch: false };
+            perUserTotals.set(player.userId, {
+              winningAmount: Math.round((prev.winningAmount + winningAmount) * 100) / 100,
+              kills: prev.kills + (selectedMatchResults.prizeType === 'perKill' ? killsOrRank : 0),
+              wonMatch: prev.wonMatch || winningAmount > 0,
+            });
           }
 
           return {
@@ -613,13 +612,56 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             slot: player.slot,
             username: player.username,
             ign: player.ign,
-            rankOrKills: score,
-            positionRank: playerPositionResults[playerKey] || null,
+            rankOrKills: posRank > 0 ? posRank : killsOrRank,
+            positionRank: posRank > 0 ? posRank : null,
             winningAmount,
-            killsWinning: selectedMatchResults.prizeType === 'perKill' ? score * (selectedMatchResults.perKillAmount || 0) : 0,
-            positionWinning: selectedMatchResults.prizeType === 'perKill' ? (selectedMatchResults.positionPrizeDistribution?.[playerPositionResults[playerKey] || 0] || 0) : 0
           };
         });
+
+        // 3. Apply wallet & stat updates (WRITES)
+        for (const [userId, totalInfo] of perUserTotals.entries()) {
+          const entry = userSnapMap.get(userId);
+          if (!entry || !entry.snap.exists()) continue;
+          const uData = entry.snap.data() as any;
+
+          const updates: any = {
+            'stats.matchesPlayed': increment(1),
+          };
+
+          if (totalInfo.wonMatch) {
+            updates['stats.totalWins'] = increment(1);
+          }
+
+          if (totalInfo.kills > 0) {
+            updates['stats.totalKills'] = increment(totalInfo.kills);
+          }
+
+          if (totalInfo.winningAmount > 0) {
+            if (!uData?.wallet) {
+              updates.wallet = {
+                deposit: Number(uData?.walletBalance || 0),
+                winnings: Math.round(((Number(uData?.winnings || 0)) + totalInfo.winningAmount) * 100) / 100,
+                bonus: Number(uData?.bonus || 0),
+              };
+            } else {
+              updates['wallet.winnings'] = increment(totalInfo.winningAmount);
+            }
+            updates['stats.totalWinnings'] = increment(totalInfo.winningAmount);
+
+            const transRef = doc(collection(db, 'transactions'));
+            tx.set(transRef, {
+              userId,
+              type: 'win',
+              amount: totalInfo.winningAmount,
+              matchId: matchId,
+              status: 'completed',
+              title: `WON IN MATCH: ${selectedMatchResults.displayId || selectedMatchResults.title || '#000'}`.slice(0, 200),
+              createdAt: serverTimestamp(),
+            });
+          }
+
+          tx.update(entry.ref, updates);
+        }
 
         const resultsRef = doc(db, 'matchResults', matchId);
         tx.set(resultsRef, {
@@ -628,16 +670,17 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           section: selectedMatchResults.section,
           prizeType: selectedMatchResults.prizeType || null,
           results: resultsArray,
-          createdAt: serverTimestamp()
+          createdAt: serverTimestamp(),
         });
 
-        tx.update(matchRef, { status: 'completed' });
+        tx.update(doc(db, 'matches', matchId), { status: 'completed' });
       });
 
       setIsResultModalOpen(false);
-      alert('Results declared successfully!');
-    } catch (e) {
+      alert('Results declared successfully! Winning coins credited to players.');
+    } catch (e: any) {
       console.error("Error during result submission:", e);
+      alert(e?.message || 'Failed to declare results. Please verify admin permissions.');
       handleFirestoreError(e, OperationType.UPDATE, `matches/${selectedMatchResults.id}`);
     } finally {
       setIsProcessing(false);
@@ -861,14 +904,15 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     }
   };
 
-  // Room ID & Password Modal Handlers
+  // Room ID & Password Modal Handlers (Stored privately in matchCredentials/{matchId})
   const handleOpenDeclareRoomModal = (m: Tournament) => {
+    const privateCreds = matchCredentialsMap[m.id];
     setSelectedDeclareRoomMatch(m);
     setDeclareRoomForm({
-      roomId: m.roomId || '',
-      roomPassword: m.roomPassword || '',
+      roomId: privateCreds?.roomId || m.roomId || '',
+      roomPassword: privateCreds?.roomPassword || m.roomPassword || '',
       setStatusLive: m.status !== 'completed',
-      customNotes: (m as any).roomNotes || '',
+      customNotes: privateCreds?.roomNotes || m.roomNotes || '',
       sendNotificationOnRoomDeclare: true
     });
     setIsDeclareRoomModalOpen(true);
@@ -876,37 +920,55 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
   const handleSaveDeclareRoom = async () => {
     if (!selectedDeclareRoomMatch) return;
+    const cleanRoomId = declareRoomForm.roomId.trim();
+    const cleanPass = declareRoomForm.roomPassword.trim();
+    const cleanNotes = declareRoomForm.customNotes.trim();
+    if (!cleanRoomId && !cleanPass) {
+      alert('Please enter Room ID and Password (or use Clear Credentials).');
+      return;
+    }
     setIsProcessing(true);
     try {
-      const cleanRoomId = declareRoomForm.roomId.trim();
-      const cleanPass = declareRoomForm.roomPassword.trim();
+      const matchId = selectedDeclareRoomMatch.id;
+      const hasCreds = Boolean(cleanRoomId && cleanPass);
 
-      const updates: any = {
+      const batch = writeBatch(db);
+      // 1. Store actual Room ID & Password ONLY inside protected matchCredentials/{matchId}
+      batch.set(doc(db, 'matchCredentials', matchId), {
+        matchId,
         roomId: cleanRoomId,
         roomPassword: cleanPass,
-        roomNotes: declareRoomForm.customNotes.trim(),
+        roomNotes: cleanNotes,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      // 2. Keep public match doc sanitized (never expose plaintext Room ID / Pass to non-joined users)
+      const matchUpdates: any = {
+        hasRoomCredentials: hasCreds,
+        roomId: '',
+        roomPassword: '',
+        roomNotes: '',
         roomDeclaredAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
       };
-
       if (declareRoomForm.setStatusLive && selectedDeclareRoomMatch.status !== 'completed') {
-        updates.status = 'ongoing';
+        matchUpdates.status = 'ongoing';
       }
+      batch.update(doc(db, 'matches', matchId), matchUpdates);
+      await batch.commit();
 
-      await updateDoc(doc(db, 'matches', selectedDeclareRoomMatch.id), updates);
-
-      // Auto push notification to match players if checked
+      // 3. Push notification ONLY to players joined in this match (do not leak raw IDP in notification body)
       if (declareRoomForm.sendNotificationOnRoomDeclare && cleanRoomId) {
         try {
           await addDoc(collection(db, 'notifications'), {
-            title: `🔑 Room ID & Pass Ready: ${selectedDeclareRoomMatch.title}`,
-            message: `Room ID: ${cleanRoomId} | Password: ${cleanPass || 'No Password'}. Join immediately in Free Fire!`,
+            title: `Room IDP Ready: ${selectedDeclareRoomMatch.title}`,
+            message: 'Room ID & Password have been published! Go to Ongoing → View IDP to enter the custom room.',
             type: 'room_creds',
             audience: 'match',
-            targetMatchId: selectedDeclareRoomMatch.id,
+            targetMatchId: matchId,
             targetMatchTitle: selectedDeclareRoomMatch.title,
             actionPage: Page.TOURNAMENTS,
-            actionText: 'View Credentials',
+            actionText: 'View IDP',
             createdAt: serverTimestamp(),
             readBy: []
           });
@@ -917,10 +979,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
       setIsDeclareRoomModalOpen(false);
       setSelectedDeclareRoomMatch(null);
-      alert('Room ID & Password declared successfully! Players can now view credentials in their match dashboard.');
+      alert('Room ID & Password published securely for joined players only!');
     } catch (err: any) {
       console.error('Failed to declare room:', err);
-      handleFirestoreError(err, OperationType.UPDATE, `matches/${selectedDeclareRoomMatch.id}`);
+      alert(err?.message || 'Failed to publish room credentials.');
+      handleFirestoreError(err, OperationType.UPDATE, `matchCredentials/${selectedDeclareRoomMatch.id}`);
     } finally {
       setIsProcessing(false);
     }
@@ -930,19 +993,31 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     if (!confirm('Are you sure you want to clear the Room ID & Password for this match?')) return;
     setIsProcessing(true);
     try {
-      await updateDoc(doc(db, 'matches', matchId), {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'matchCredentials', matchId), {
+        matchId,
         roomId: '',
         roomPassword: '',
         roomNotes: '',
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      batch.update(doc(db, 'matches', matchId), {
+        hasRoomCredentials: false,
+        roomId: '',
+        roomPassword: '',
+        roomNotes: '',
+        updatedAt: serverTimestamp(),
       });
+      await batch.commit();
       if (isDeclareRoomModalOpen) {
         setIsDeclareRoomModalOpen(false);
         setSelectedDeclareRoomMatch(null);
       }
       alert('Room credentials cleared successfully.');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to clear room:', err);
+      alert(err?.message || 'Failed to clear room credentials.');
+      handleFirestoreError(err, OperationType.UPDATE, `matchCredentials/${matchId}`);
     } finally {
       setIsProcessing(false);
     }
@@ -1083,7 +1158,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             qrImageUrl: qrForm.qrImageUrl || '',
             amountQrs: qrForm.amountQrs || {},
             upiId: qrForm.upiId || '',
-            merchantName: qrForm.merchantName || 'FX Arena Esports',
+            merchantName: qrForm.merchantName || 'FX Arena eSport',
             isActive: false
           },
           updatedAt: serverTimestamp()
@@ -1284,7 +1359,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         qrImageUrl: cleanDefaultUrl.startsWith('data:') ? cleanDefaultUrl : cleanDefaultUrl.slice(0, 2500),
         amountQrs: cleanAmountQrs,
         upiId: qrForm.upiId.trim().slice(0, 128),
-        merchantName: (qrForm.merchantName.trim() || 'FX Arena Esports').slice(0, 100),
+        merchantName: (qrForm.merchantName.trim() || 'FX Arena eSport').slice(0, 100),
         isActive: qrForm.isActive
       };
       await setDoc(doc(db, 'appSettings', 'payment_qr'), {
@@ -1302,29 +1377,53 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   };
 
   const handleApproveTransaction = async (tx: any) => {
-    if (!tx?.id || tx.status !== 'pending') return;
+    if (!tx?.id || String(tx.status || '').toLowerCase().trim() !== 'pending') return;
     setPaymentFeedback(null);
     setIsProcessing(true);
     try {
+      const txType = String(tx.type || '').toLowerCase().trim();
+      const creditAmount = Math.round((Number(tx.amount) || 0) * 100) / 100;
+
       await runTransaction(db, async (transaction) => {
         const txRef = doc(db, 'transactions', tx.id);
         const txSnap = await transaction.get(txRef);
         if (!txSnap.exists()) throw new Error('Transaction not found');
-        if (txSnap.data()?.status !== 'pending') throw new Error('Transaction already processed');
+        const currentStatus = String(txSnap.data()?.status || '').toLowerCase().trim();
+        if (currentStatus !== 'pending') throw new Error('Transaction already processed');
 
         const userRef = doc(db, 'users', tx.userId);
         const userSnap = await transaction.get(userRef);
 
-        transaction.update(txRef, { status: 'completed' });
-        if (tx.type === 'deposit' && userSnap.exists()) {
-          transaction.update(userRef, {
-            'wallet.deposit': increment(Number(tx.amount) || 0)
-          });
+        if (txType === 'deposit') {
+          if (!userSnap.exists()) {
+            throw new Error('Player account does not exist anymore.');
+          }
+          const uData = userSnap.data() as any;
+          if (!uData?.wallet) {
+            transaction.update(userRef, {
+              wallet: {
+                deposit: Math.round(((Number(uData?.walletBalance || 0)) + creditAmount) * 100) / 100,
+                winnings: Number(uData?.winnings || 0),
+                bonus: Number(uData?.bonus || 0),
+              },
+            });
+          } else {
+            transaction.update(userRef, {
+              'wallet.deposit': increment(creditAmount),
+            });
+          }
         }
+
+        transaction.update(txRef, { status: 'completed' });
       });
-      setPaymentFeedback({ type: 'success', message: `Approved ₹${tx.amount} ${tx.type} request.` });
+
+      setPaymentFeedback({ type: 'success', message: `Approved ₹${creditAmount} ${txType} request and credited user wallet.` });
     } catch (e: any) {
-      setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to approve transaction' });
+      const msg = e?.message || 'Failed to approve transaction';
+      const friendlyMsg = msg.toLowerCase().includes('permission')
+        ? 'Permission denied: please verify your admin email at the top banner or sign in with your main admin account.'
+        : msg;
+      setPaymentFeedback({ type: 'error', message: friendlyMsg });
       handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
     } finally {
       setIsProcessing(false);
@@ -1332,8 +1431,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   };
 
   const handleRejectTransaction = async (tx: any) => {
-    if (!tx?.id || tx.status !== 'pending') return;
-    const isWithdraw = tx.type === 'withdraw' || tx.type === 'withdrawal';
+    if (!tx?.id || String(tx.status || '').toLowerCase().trim() !== 'pending') return;
+    const txType = String(tx.type || '').toLowerCase().trim();
+    const isWithdraw = txType === 'withdraw' || txType === 'withdrawal';
+    const refundAmount = Math.round((Number(tx.amount) || 0) * 100) / 100;
     setPaymentFeedback(null);
     setIsProcessing(true);
     try {
@@ -1341,21 +1442,38 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         const txRef = doc(db, 'transactions', tx.id);
         const txSnap = await transaction.get(txRef);
         if (!txSnap.exists()) throw new Error('Transaction not found');
-        if (txSnap.data()?.status !== 'pending') throw new Error('Transaction already processed');
+        const currentStatus = String(txSnap.data()?.status || '').toLowerCase().trim();
+        if (currentStatus !== 'pending') throw new Error('Transaction already processed');
 
         const userRef = doc(db, 'users', tx.userId);
         const userSnap = await transaction.get(userRef);
 
-        transaction.update(txRef, { status: 'failed' });
         if (isWithdraw && userSnap.exists()) {
-          transaction.update(userRef, {
-            'wallet.winnings': increment(Number(tx.amount) || 0)
-          });
+          const uData = userSnap.data() as any;
+          if (!uData?.wallet) {
+            transaction.update(userRef, {
+              wallet: {
+                deposit: Number(uData?.walletBalance || 0),
+                winnings: Math.round(((Number(uData?.winnings || 0)) + refundAmount) * 100) / 100,
+                bonus: Number(uData?.bonus || 0),
+              },
+            });
+          } else {
+            transaction.update(userRef, {
+              'wallet.winnings': increment(refundAmount),
+            });
+          }
         }
+
+        transaction.update(txRef, { status: 'failed' });
       });
-      setPaymentFeedback({ type: 'success', message: `Rejected ₹${tx.amount} ${tx.type} request.` });
+      setPaymentFeedback({ type: 'success', message: `Rejected ₹${refundAmount} ${txType} request.` });
     } catch (e: any) {
-      setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to reject transaction' });
+      const msg = e?.message || 'Failed to reject transaction';
+      const friendlyMsg = msg.toLowerCase().includes('permission')
+        ? 'Permission denied: please verify your admin email at the top banner or sign in with your main admin account.'
+        : msg;
+      setPaymentFeedback({ type: 'error', message: friendlyMsg });
       handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
     } finally {
       setIsProcessing(false);
@@ -1383,9 +1501,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             </button>
             <div>
               <h2 className="text-xl font-bold tracking-tighter uppercase italic text-white leading-none">
-                Admin <span className="text-purple-500">Panel</span>
+                {isStaffRole ? 'Staff' : 'Admin'} <span className="text-purple-500">Panel</span>
               </h2>
-              <p className="text-[8px] font-black uppercase tracking-widest text-neutral-600 mt-1">Production Version 2.0</p>
+              <p className="text-[8px] font-black uppercase tracking-widest text-neutral-600 mt-1">
+                {isStaffRole ? 'Match • IDP • Result • Notification Control' : 'Production Version 2.0'}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -1394,13 +1514,83 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           </div>
         </div>
 
+        {needsAdminVerification && (
+          <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-amber-200 space-y-2.5">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-xs leading-snug">
+                <p className="font-black uppercase tracking-wider text-amber-300">
+                  {isStaffRole ? 'Staff Email Verification Needed' : 'Admin Email Verification Needed'}
+                </p>
+                <p className="text-neutral-300 mt-0.5">
+                  {isStaffRole
+                    ? 'To create matches, declare Room IDP, declare results, or send notifications securely, verify your email once.'
+                    : 'To approve deposits, declare results, or edit matches securely from this admin account, verify your email once.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (auth.currentUser) {
+                      await sendEmailVerification(auth.currentUser);
+                      setVerificationFeedback('Verification link sent to your email! Open your inbox, click it, then tap Refresh Status.');
+                    }
+                  } catch (err: any) {
+                    setVerificationFeedback(err?.message || 'Could not send email.');
+                  }
+                }}
+                className="flex-1 py-2 px-3 bg-amber-500 text-black rounded-xl text-[10px] font-black uppercase tracking-wider"
+              >
+                Send Verification Link
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (auth.currentUser) {
+                    await auth.currentUser.reload();
+                    await auth.currentUser.getIdToken(true);
+                    let hasRoleDoc = false;
+                    try {
+                      if (isStaffRole) {
+                        const sDoc = await getDoc(doc(db, 'staff', auth.currentUser.uid));
+                        hasRoleDoc = sDoc.exists();
+                      } else {
+                        const aDoc = await getDoc(doc(db, 'admins', auth.currentUser.uid));
+                        hasRoleDoc = aDoc.exists();
+                      }
+                    } catch {
+                      hasRoleDoc = false;
+                    }
+                    if (auth.currentUser.emailVerified || hasRoleDoc) {
+                      setNeedsAdminVerification(false);
+                      setVerificationFeedback(null);
+                    } else {
+                      setVerificationFeedback('Not verified yet. Click the link in your inbox or ask Super Admin to tap "Sync Staff" in Users tab.');
+                    }
+                  }
+                }}
+                className="py-2 px-3 bg-white/10 hover:bg-white/20 text-white rounded-xl text-[10px] font-black uppercase tracking-wider"
+              >
+                Refresh Status
+              </button>
+            </div>
+            {verificationFeedback && (
+              <p className="text-[10px] font-bold text-amber-300">{verificationFeedback}</p>
+            )}
+          </div>
+        )}
+
         {/* Tab Navigation */}
         <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
-          {Object.values(AdminTab).map((tab) => (
+          {(isStaffRole ? [AdminTab.MATCHES, AdminTab.NOTIFICATIONS] : Object.values(AdminTab)).map((tab) => (
             <button
+              type="button"
               key={tab}
               onClick={() => {
-                if (tab === AdminTab.MODES) {
+                if (tab === AdminTab.MODES && isFullAdmin) {
                   onPageChange(Page.ADMIN_MODES);
                   return;
                 }
@@ -1413,7 +1603,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               }`}
             >
               <span>{tab}</span>
-              {tab === AdminTab.TRANSACTIONS && pendingTransactionsCount > 0 && (
+              {isFullAdmin && tab === AdminTab.TRANSACTIONS && pendingTransactionsCount > 0 && (
                 <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-black text-[8px] font-black leading-none">
                   {pendingTransactionsCount}
                 </span>
@@ -1423,7 +1613,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         </div>
 
         <AnimatePresence mode="wait">
-          {activeTab === AdminTab.DASHBOARD && (
+          {isFullAdmin && activeTab === AdminTab.DASHBOARD && (
             <motion.div
               key="dashboard"
               initial={{ opacity: 0, y: 20 }}
@@ -1476,7 +1666,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             </motion.div>
           )}
 
-          {activeTab === AdminTab.USERS && (
+          {isFullAdmin && activeTab === AdminTab.USERS && (
             <motion.div
               key="users"
               initial={{ opacity: 0, y: 20 }}
@@ -1497,30 +1687,64 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
               <div className="space-y-3">
                 {users
-                  .filter(u => u.username.toLowerCase().includes(searchTerm.toLowerCase()))
-                  .map((u) => (
-                  <div 
-                    key={u.id}
-                    onClick={() => onPageChange(Page.ADMIN_USER_PROFILE, u.id)}
-                    className="p-4 bg-neutral-900 border border-neutral-800 rounded-2xl flex items-center justify-between group cursor-pointer hover:border-primary transition-all"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-xl bg-black flex items-center justify-center text-neutral-700 border border-white/5">
-                        <Users size={20} />
+                  .filter(u =>
+                    (u.username || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    (u.email || '').toLowerCase().includes(searchTerm.toLowerCase())
+                  )
+                  .map((u) => {
+                    const isUserStaff = STAFF_EMAILS.includes((u.email || '').toLowerCase().trim());
+                    return (
+                      <div 
+                        key={u.id}
+                        onClick={() => onPageChange(Page.ADMIN_USER_PROFILE, u.id)}
+                        className="p-4 bg-neutral-900 border border-neutral-800 rounded-2xl flex items-center justify-between group cursor-pointer hover:border-primary transition-all"
+                      >
+                        <div className="flex items-center gap-4 min-w-0">
+                          <div className="w-10 h-10 rounded-xl bg-black flex items-center justify-center text-neutral-700 border border-white/5 shrink-0">
+                            <Users size={20} />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-xs font-black italic truncate">{u.username}</h4>
+                              {isUserStaff && (
+                                <span className="px-2 py-0.5 rounded-md bg-purple-500/20 border border-purple-500/30 text-purple-300 text-[8px] font-black uppercase tracking-wider">
+                                  STAFF
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[8px] font-black uppercase tracking-widest text-neutral-600 truncate">{u.email}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2.5 shrink-0">
+                          {isUserStaff && u.id && (
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  await setDoc(doc(db, 'staff', u.id!), {
+                                    email: (u.email || '').toLowerCase().trim(),
+                                    role: 'staff',
+                                    updatedAt: serverTimestamp(),
+                                  }, { merge: true });
+                                  alert(`Staff control access synced for ${u.email}!`);
+                                } catch (err: any) {
+                                  alert(err?.message || 'Failed to sync staff access');
+                                }
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600 border border-purple-500/40 text-purple-200 hover:text-white text-[9px] font-black uppercase tracking-wider transition-all"
+                            >
+                              Sync Staff
+                            </button>
+                          )}
+                          <span className="text-[10px] font-black text-emerald-400 italic">
+                            ₹{(u.wallet?.deposit || 0) + (u.wallet?.winnings || 0) + (u.wallet?.bonus || 0)}
+                          </span>
+                          {u.isBanned && <Ban size={14} className="text-red-500" />}
+                        </div>
                       </div>
-                      <div>
-                        <h4 className="text-xs font-black italic">{u.username}</h4>
-                        <p className="text-[8px] font-black uppercase tracking-widest text-neutral-600">{u.email}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-[10px] font-black text-emerald-400 italic">
-                        ₹{(u.wallet?.deposit || 0) + (u.wallet?.winnings || 0) + (u.wallet?.bonus || 0)}
-                      </span>
-                      {u.isBanned && <Ban size={14} className="text-red-500" />}
-                    </div>
-                  </div>
-                ))}
+                    );
+                  })}
               </div>
             </motion.div>
           )}
@@ -1535,6 +1759,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             >
               <div className="space-y-4">
                 <button 
+                  type="button"
                   onClick={() => onPageChange(Page.ADMIN_CREATE_MATCH)}
                   className="w-full py-5 bg-purple-600 hover:bg-purple-500 rounded-2xl flex items-center justify-center gap-3 shadow-lg shadow-purple-600/30 active:scale-[0.98] transition-all text-white"
                 >
@@ -1559,11 +1784,19 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     { id: 'all', label: `All (${matches.length})` },
                     { 
                       id: 'need_room', 
-                      label: `⚠️ Need Room ID (${matches.filter(m => (!m.roomId || !m.roomPassword) && m.status !== 'completed').length})` 
+                      label: `⚠️ Need Room ID (${matches.filter(m => {
+                        const c = matchCredentialsMap[m.id];
+                        const hasC = Boolean((c?.roomId && c?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword));
+                        return !hasC && m.status !== 'completed';
+                      }).length})` 
                     },
                     { 
                       id: 'room_ready', 
-                      label: `🔑 Room Ready (${matches.filter(m => m.roomId && m.roomPassword && m.status !== 'completed').length})` 
+                      label: `🔑 Room Ready (${matches.filter(m => {
+                        const c = matchCredentialsMap[m.id];
+                        const hasC = Boolean((c?.roomId && c?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword));
+                        return hasC && m.status !== 'completed';
+                      }).length})` 
                     },
                     { 
                       id: 'live', 
@@ -1575,6 +1808,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     }
                   ].map((filterItem) => (
                     <button
+                      type="button"
                       key={filterItem.id}
                       onClick={() => setMatchStatusFilter(filterItem.id as any)}
                       className={`px-3.5 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider whitespace-nowrap transition-all border ${
@@ -1596,11 +1830,14 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     const matchesSearch = matchText.toLowerCase().includes(searchTerm.toLowerCase());
                     if (!matchesSearch) return false;
 
+                    const cred = matchCredentialsMap[m.id];
+                    const hasC = Boolean((cred?.roomId && cred?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword));
+
                     if (matchStatusFilter === 'need_room') {
-                      return (!m.roomId || !m.roomPassword) && m.status !== 'completed';
+                      return !hasC && m.status !== 'completed';
                     }
                     if (matchStatusFilter === 'room_ready') {
-                      return m.roomId && m.roomPassword && m.status !== 'completed';
+                      return hasC && m.status !== 'completed';
                     }
                     if (matchStatusFilter === 'live') {
                       return m.status === 'ongoing';
@@ -1611,11 +1848,15 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     return true;
                   })
                   .map((m) => {
-                    const hasRoomCreds = Boolean(m.roomId && m.roomPassword);
+                    const cred = matchCredentialsMap[m.id];
+                    const displayRoomId = cred?.roomId || m.roomId || '';
+                    const displayRoomPass = cred?.roomPassword || m.roomPassword || '';
+                    const hasRoomCreds = Boolean(displayRoomId && displayRoomPass);
                     return (
                       <div key={m.id} className="p-5 bg-neutral-900 border border-neutral-800 rounded-3xl relative overflow-hidden group shadow-lg">
                         <div className="absolute top-0 right-0 p-4 flex gap-2">
                           <button 
+                            type="button"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
@@ -1627,6 +1868,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                             <Copy size={14} />
                           </button>
                           <button 
+                            type="button"
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
@@ -1637,16 +1879,19 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                           >
                             <Edit2 size={14} />
                           </button>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setIsDeleteConfirmOpen({ isOpen: true, matchId: m.id });
-                            }}
-                            className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500 transition-colors hover:text-white"
-                            title="Delete Match"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          {isFullAdmin && (
+                            <button 
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setIsDeleteConfirmOpen({ isOpen: true, matchId: m.id });
+                              }}
+                              className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500 transition-colors hover:text-white"
+                              title="Delete Match"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </div>
                         
                         <div className="flex items-center justify-between mb-2">
@@ -1724,10 +1969,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                               <div className="flex items-center justify-between pr-1">
                                 <div>
                                   <p className="text-[7px] font-black text-neutral-500 uppercase">Room ID</p>
-                                  <p className="text-xs font-black text-white font-mono">{m.roomId}</p>
+                                  <p className="text-xs font-black text-white font-mono">{displayRoomId}</p>
                                 </div>
                                 <button 
-                                  onClick={() => handleCopyCredential(m.roomId!, `room_${m.id}`)}
+                                  onClick={() => handleCopyCredential(displayRoomId, `room_${m.id}`)}
                                   className="p-1 text-neutral-400 hover:text-white"
                                   title="Copy Room ID"
                                 >
@@ -1737,10 +1982,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                               <div className="flex items-center justify-between pr-1 border-l border-neutral-800 pl-2">
                                 <div>
                                   <p className="text-[7px] font-black text-neutral-500 uppercase">Password</p>
-                                  <p className="text-xs font-black text-white font-mono">{m.roomPassword}</p>
+                                  <p className="text-xs font-black text-white font-mono">{displayRoomPass}</p>
                                 </div>
                                 <button 
-                                  onClick={() => handleCopyCredential(m.roomPassword!, `pass_${m.id}`)}
+                                  onClick={() => handleCopyCredential(displayRoomPass, `pass_${m.id}`)}
                                   className="p-1 text-neutral-400 hover:text-white"
                                   title="Copy Password"
                                 >
@@ -1750,7 +1995,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                             </div>
                           ) : (
                             <p className="text-[9px] font-bold text-neutral-500 italic">
-                              Room ID & Password not declared yet. Click below to publish credentials to players.
+                              Room ID & Password not declared yet. Only joined players will see saved credentials.
                             </p>
                           )}
 
@@ -1759,33 +2004,53 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                             <input 
                               type="text" 
                               placeholder="Room ID"
-                              defaultValue={m.roomId || ''}
+                              defaultValue={displayRoomId}
                               id={`quick_room_${m.id}`}
                               className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-[10px] font-bold text-white outline-none focus:border-purple-500 placeholder:text-neutral-600"
                             />
                             <input 
                               type="text" 
                               placeholder="Pass"
-                              defaultValue={m.roomPassword || ''}
+                              defaultValue={displayRoomPass}
                               id={`quick_pass_${m.id}`}
                               className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-[10px] font-bold text-white outline-none focus:border-purple-500 placeholder:text-neutral-600"
                             />
                             <button
+                              type="button"
                               onClick={async () => {
                                 const idInput = document.getElementById(`quick_room_${m.id}`) as HTMLInputElement;
                                 const passInput = document.getElementById(`quick_pass_${m.id}`) as HTMLInputElement;
                                 const rId = idInput ? idInput.value.trim() : '';
                                 const rPass = passInput ? passInput.value.trim() : '';
-                                const updates: any = { 
-                                  roomId: rId, 
-                                  roomPassword: rPass, 
-                                  updatedAt: serverTimestamp() 
-                                };
-                                if (rId && m.status === 'upcoming') {
-                                  updates.status = 'ongoing';
+                                if (!rId && !rPass) {
+                                  alert('Please enter Room ID and Password first.');
+                                  return;
                                 }
-                                await updateDoc(doc(db, 'matches', m.id), updates);
-                                alert('Room credentials updated!');
+                                try {
+                                  const batch = writeBatch(db);
+                                  batch.set(doc(db, 'matchCredentials', m.id), {
+                                    matchId: m.id,
+                                    roomId: rId,
+                                    roomPassword: rPass,
+                                    updatedAt: serverTimestamp()
+                                  }, { merge: true });
+                                  const updates: any = {
+                                    hasRoomCredentials: Boolean(rId && rPass),
+                                    roomId: '',
+                                    roomPassword: '',
+                                    updatedAt: serverTimestamp()
+                                  };
+                                  if (rId && m.status === 'upcoming') {
+                                    updates.status = 'ongoing';
+                                  }
+                                  batch.update(doc(db, 'matches', m.id), updates);
+                                  await batch.commit();
+                                  alert('Room credentials updated securely for joined players!');
+                                } catch (err: any) {
+                                  console.error('Quick save room failed:', err);
+                                  alert(err?.message || 'Failed to save Room ID & Password.');
+                                  handleFirestoreError(err, OperationType.UPDATE, `matchCredentials/${m.id}`);
+                                }
                               }}
                               className="p-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl border border-neutral-700 active:scale-95 transition-all"
                               title="Save Credentials Quick"
@@ -1798,6 +2063,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                         {/* Action Buttons: Declare Room Modal & Declare Result */}
                         <div className="grid grid-cols-2 gap-2 mt-4">
                           <button 
+                            type="button"
                             onClick={() => handleOpenDeclareRoomModal(m)}
                             className="py-3 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-purple-300 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
                           >
@@ -1807,6 +2073,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
                           {m.status !== 'completed' ? (
                             <button 
+                              type="button"
                               onClick={() => handleDeclareResult(m)}
                               className="py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-wider shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
                             >
@@ -1827,7 +2094,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             </motion.div>
           )}
 
-          {activeTab === AdminTab.TRANSACTIONS && (
+          {isFullAdmin && activeTab === AdminTab.TRANSACTIONS && (
             <motion.div
               key="transactions"
               initial={{ opacity: 0, y: 20 }}
@@ -1860,7 +2127,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
               {/* Pending Deposits & Withdrawals Queue */}
               {(() => {
-                const pendingList = transactions.filter(t => t.status === 'pending');
+                const pendingList = transactions.filter(t => String(t.status || '').toLowerCase().trim() === 'pending');
                 return (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
@@ -2305,7 +2572,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">APK Download Link (Shared in Mobile App)</label>
                     <input 
                       type="text"
-                      placeholder="https://github.com/.../releases/latest/download/FX-Arena-Esports.apk"
+                      placeholder="https://yourapp.com/FX-Arena-Esports.apk"
                       value={appSettings?.referral?.apkDownloadUrl || ''}
                       onChange={(e) => setAppSettings({
                         ...appSettings,
@@ -2693,7 +2960,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                       type="text"
                       value={qrForm.merchantName}
                       onChange={(e) => setQrForm(prev => ({ ...prev, merchantName: e.target.value }))}
-                      placeholder="FX Arena Esports"
+                      placeholder="FX Arena eSport"
                       className="w-full bg-black border border-neutral-800 rounded-xl px-3 py-2.5 text-xs font-bold text-white outline-none focus:border-orange-500"
                     />
                   </div>
@@ -3051,99 +3318,83 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                 </div>
 
                 <div className="space-y-3">
-                   <p className="text-[9px] font-black uppercase tracking-widest text-neutral-600">Enter Results for Participants</p>
+                   <div className="flex items-center justify-between">
+                     <p className="text-[9px] font-black uppercase tracking-widest text-neutral-500">Enter Custom Winning Coins Per Player</p>
+                     <span className="text-[9px] font-black text-emerald-400">
+                       Total: ₹{(selectedMatchResults.players || []).reduce((sum, p) => {
+                         const k = `${p.userId}_${p.slot}`;
+                         return sum + Math.max(0, Number(playerWinningCoins[k] || 0) || 0);
+                       }, 0)}
+                     </span>
+                   </div>
                    {selectedMatchResults.playersCount === 0 ? (
                      <div className="text-center py-10">
                         <UsersIcon size={32} className="mx-auto text-neutral-800 mb-4" />
                         <p className="text-[10px] font-black uppercase tracking-widest text-neutral-700 italic">No players have joined this match</p>
                      </div>
                    ) : (
-                     <div className="space-y-2">
+                     <div className="space-y-2.5">
                         {(selectedMatchResults.players || []).map(player => {
                             const playerKey = `${player.userId}_${player.slot}`;
-                            const kills = playerResults[playerKey] || 0;
-                            const rank = playerPositionResults[playerKey] || 0;
-                            const killsReward = kills * (selectedMatchResults.perKillAmount || 0);
-                            const posReward = selectedMatchResults.positionPrizeDistribution?.[rank] || 0;
-                            const totalReward = killsReward + posReward;
+                            const coinsValue = playerWinningCoins[playerKey] ?? '';
+                            const numericCoins = Math.max(0, Number(coinsValue) || 0);
+                            const killsOrRank = playerResults[playerKey] || 0;
 
                             return (
-                              <div key={playerKey} className="p-4 bg-black/40 rounded-2xl border border-white/5 space-y-4">
+                              <div key={playerKey} className="p-4 bg-black/40 rounded-2xl border border-white/10 space-y-3">
                                 <div className="flex items-center justify-between">
                                   <div 
-                                    onClick={() => onPageChange(Page.ADMIN_USER_PROFILE, player.userId)}
-                                    className="flex items-center gap-3 cursor-pointer group"
+                                    onClick={() => {
+                                      if (isFullAdmin) {
+                                        onPageChange(Page.ADMIN_USER_PROFILE, player.userId);
+                                      }
+                                    }}
+                                    className={`flex items-center gap-3 group ${isFullAdmin ? 'cursor-pointer' : ''}`}
                                   >
-                                   <div className="w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-500 border border-white/5 group-hover:bg-primary/20 group-hover:text-primary transition-colors">
-                                      <UsersIcon size={16} />
+                                   <div className="w-8 h-8 rounded-lg bg-neutral-800 flex items-center justify-center text-neutral-400 border border-white/5 font-black text-[10px]">
+                                      #{player.slot || '?'}
                                    </div>
                                    <div>
-                                     <h4 className="text-[10px] font-black italic group-hover:text-primary transition-colors leading-none mb-1">{player.ign}</h4>
-                                     <p className="text-[7px] text-neutral-600 font-bold uppercase tracking-widest">{player.username}</p>
+                                     <h4 className="text-xs font-black italic group-hover:text-primary transition-colors leading-none mb-1 text-white">{player.ign || player.username}</h4>
+                                     <p className="text-[8px] text-neutral-500 font-bold uppercase tracking-widest">@{player.username}</p>
                                    </div>
                                 </div>
-                                {totalReward > 0 && (
-                                  <div className="text-right">
-                                    <p className="text-[10px] font-black text-emerald-400 italic">₹{totalReward}</p>
-                                    <p className="text-[6px] text-neutral-600 font-bold uppercase">Total Winnings</p>
+                                {numericCoins > 0 && (
+                                  <div className="text-right bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-xl">
+                                    <p className="text-xs font-black text-emerald-400 italic">+{numericCoins} Coins</p>
                                   </div>
                                 )}
                               </div>
 
-                              <div className="grid grid-cols-2 gap-3">
-                                <div className="space-y-1.5">
-                                  <label className="text-[7px] font-black uppercase tracking-widest text-neutral-500 ml-1">
-                                    {selectedMatchResults.section === 'Battle Royale' 
-                                      ? (selectedMatchResults.prizeType === 'perKill' ? 'Kills' : 'Rank')
-                                      : 'Rank (1=Win)'}
+                              <div className="grid grid-cols-2 gap-2.5">
+                                <div className="space-y-1">
+                                  <label className="text-[8px] font-black uppercase tracking-widest text-emerald-400 ml-1">
+                                    Winning Coins (₹) *
                                   </label>
-                                  <div className="relative">
-                                    <input 
-                                      type="number"
-                                      placeholder="0"
-                                      value={playerResults[`${player.userId}_${player.slot}`] || ''}
-                                      onChange={(e) => setPlayerResults({ ...playerResults, [`${player.userId}_${player.slot}`]: Number(e.target.value) })}
-                                      className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-[10px] font-black italic text-white focus:border-purple-500 outline-none"
-                                    />
-                                    {selectedMatchResults.prizeType === 'perKill' && killsReward > 0 && (
-                                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[8px] font-black text-emerald-500">₹{killsReward}</span>
-                                    )}
-                                  </div>
+                                  <input 
+                                    type="number"
+                                    min="0"
+                                    placeholder="e.g. 25 or 15"
+                                    value={coinsValue}
+                                    onChange={(e) => setPlayerWinningCoins({ ...playerWinningCoins, [playerKey]: e.target.value })}
+                                    className="w-full bg-neutral-800 border border-emerald-500/40 rounded-xl px-3 py-2.5 text-xs font-black text-emerald-300 focus:border-emerald-400 outline-none placeholder:text-neutral-600"
+                                  />
                                 </div>
 
-                                {selectedMatchResults.prizeType === 'perKill' && (
-                                  <div className="space-y-1.5">
-                                    <label className="text-[7px] font-black uppercase tracking-widest text-neutral-500 ml-1">Rank (Optional)</label>
-                                    <div className="relative">
-                                      <select 
-                                        value={rank}
-                                        onChange={(e) => setPlayerPositionResults({ ...playerPositionResults, [`${player.userId}_${player.slot}`]: Number(e.target.value) })}
-                                        className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-[10px] font-black italic text-white focus:border-purple-500 outline-none appearance-none"
-                                      >
-                                        <option value={0}>No Rank</option>
-                                        {Array.from({ length: selectedMatchResults.positionWinnersCount || 0 }).map((_, idx) => (
-                                          <option key={idx + 1} value={idx + 1}>Rank {idx + 1}</option>
-                                        ))}
-                                      </select>
-                                      {posReward > 0 && (
-                                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[8px] font-black text-emerald-500">₹{posReward}</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
+                                <div className="space-y-1">
+                                  <label className="text-[8px] font-black uppercase tracking-widest text-neutral-500 ml-1">
+                                    {selectedMatchResults.prizeType === 'perKill' ? 'Kills (Optional)' : 'Rank (Optional)'}
+                                  </label>
+                                  <input 
+                                    type="number"
+                                    min="0"
+                                    placeholder="Optional"
+                                    value={killsOrRank || ''}
+                                    onChange={(e) => setPlayerResults({ ...playerResults, [playerKey]: Number(e.target.value) })}
+                                    className="w-full bg-neutral-800 border border-neutral-700 rounded-xl px-3 py-2.5 text-xs font-bold text-white focus:border-purple-500 outline-none placeholder:text-neutral-600"
+                                  />
+                                </div>
                               </div>
-
-                              {selectedMatchResults.prizeType === 'perKill' && totalReward > 0 && (
-                                <div className="pt-3 border-t border-white/5 flex justify-between items-center px-1">
-                                  <div className="flex gap-3">
-                                    <p className="text-[7px] text-neutral-600 font-bold uppercase tracking-tight">Kills: <span className="text-white">₹{killsReward}</span></p>
-                                    {posReward > 0 && (
-                                      <p className="text-[7px] text-neutral-600 font-bold uppercase tracking-tight">Rank: <span className="text-white">₹{posReward}</span></p>
-                                    )}
-                                  </div>
-                                  <p className="text-[8px] font-black text-emerald-400 italic">Total: ₹{totalReward}</p>
-                                </div>
-                              )}
                             </div>
                           );
                         })}
@@ -3153,11 +3404,12 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               </div>
 
               <button 
+                type="button"
                 onClick={handleSubmitResult}
                 disabled={isProcessing || selectedMatchResults.playersCount === 0}
-                className="w-full mt-8 py-5 bg-purple-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full mt-6 py-5 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isProcessing ? <Loader2 size={18} className="animate-spin" /> : 'Finalize & Declare Results'}
+                {isProcessing ? <Loader2 size={18} className="animate-spin" /> : 'Credit Coins & Declare Results'}
               </button>
             </motion.div>
           </div>
@@ -3635,6 +3887,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
               <div className="pt-2 flex flex-col gap-2">
                 <button
+                  type="button"
                   onClick={handleSaveDeclareRoom}
                   disabled={isProcessing}
                   className="w-full py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 active:scale-95 transition-all"
@@ -3643,8 +3896,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                   Publish Room Credentials
                 </button>
 
-                {(selectedDeclareRoomMatch.roomId || selectedDeclareRoomMatch.roomPassword) && (
+                {(matchCredentialsMap[selectedDeclareRoomMatch.id]?.roomId || selectedDeclareRoomMatch.roomId || selectedDeclareRoomMatch.roomPassword) && (
                   <button
+                    type="button"
                     onClick={() => handleClearRoomCredentials(selectedDeclareRoomMatch.id)}
                     disabled={isProcessing}
                     className="w-full py-2.5 text-neutral-500 hover:text-red-400 text-[9px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1"

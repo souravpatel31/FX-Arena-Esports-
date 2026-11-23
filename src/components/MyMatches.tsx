@@ -15,19 +15,19 @@ export default function MyMatches({ onPageChange }: MyMatchesProps) {
       id: 'ongoing',
       title: 'Ongoing',
       type: 'ongoing',
-      actionParam: 'freefire?status=ongoing'
+      actionParam: '?my=1&status=ongoing'
     },
     {
       id: 'upcoming',
       title: 'Upcoming',
       type: 'upcoming',
-      actionParam: 'freefire?status=upcoming'
+      actionParam: '?my=1&status=upcoming'
     },
     {
       id: 'completed',
       title: 'Completed',
       type: 'completed',
-      actionParam: 'freefire?status=completed'
+      actionParam: '?my=1&status=completed'
     }
   ];
 

@@ -18,7 +18,8 @@ export enum Page {
   GAME_MODES = 'game_modes',
   ADMIN_MODES = 'admin_modes',
   LEADERBOARD = 'leaderboard',
-  MATCH_DETAILS = 'match_details'
+  MATCH_DETAILS = 'match_details',
+  DOWNLOAD = 'download'
 }
 
 export interface Game {
@@ -48,6 +49,8 @@ export interface Tournament {
   time: string;
   roomId?: string;
   roomPassword?: string;
+  hasRoomCredentials?: boolean;
+  roomNotes?: string;
   prizeType?: 'perKill' | 'survival';
   perKillAmount?: number;
   winnersCount?: number;

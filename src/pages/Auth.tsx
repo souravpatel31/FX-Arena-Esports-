@@ -261,7 +261,7 @@ export default function Auth({ onLogin }: AuthProps) {
           >
             <SafeImage 
               src={APP_LOGO_URL} 
-              alt="FX Arena Logo" 
+              alt="FX Arena eSport Logo" 
               className="w-24 h-24 rounded-2xl object-cover shadow-2xl border border-white/10"
             />
           </motion.div>

@@ -1,6 +1,4 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Loader2, Gamepad2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
 import { APP_LOGO_URL } from '../utils/assetUrl';
 
 interface SafeImageProps {
@@ -15,84 +13,75 @@ interface SafeImageProps {
 
 const APP_LOGO = APP_LOGO_URL;
 
-export default function SafeImage({ 
-  src, 
-  alt = "Image", 
-  className = "", 
-  imgClassName = "",
+function isInstantSource(value?: string): boolean {
+  if (!value) return true;
+  return (
+    value.startsWith('data:') ||
+    value.startsWith('blob:') ||
+    value.startsWith('/') ||
+    value.startsWith('./')
+  );
+}
+
+export default function SafeImage({
+  src,
+  alt = 'Image',
+  className = '',
+  imgClassName = '',
   fallbackSrc = APP_LOGO,
   objectFit = 'cover',
-  showLoader = true
 }: SafeImageProps) {
-  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [currentSrc, setCurrentSrc] = useState<string | undefined>(src);
+  const [currentSrc, setCurrentSrc] = useState<string>(src || fallbackSrc);
+  const [loaded, setLoaded] = useState<boolean>(() => isInstantSource(src));
+  const imgRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
-    setIsLoading(true);
     setError(false);
-    setCurrentSrc(src);
-  }, [src]);
+    const nextSrc = src || fallbackSrc;
+    setCurrentSrc(nextSrc);
+    if (isInstantSource(nextSrc)) {
+      setLoaded(true);
+    } else if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+      setLoaded(true);
+    } else {
+      setLoaded(false);
+    }
+  }, [src, fallbackSrc]);
 
   const handleError = () => {
-    if (!error) {
+    if (!error && currentSrc !== fallbackSrc) {
       setError(true);
       setCurrentSrc(fallbackSrc);
-      setIsLoading(false);
+      setLoaded(true);
+    } else {
+      setLoaded(true);
     }
   };
 
   const handleLoad = () => {
-    setIsLoading(false);
+    setLoaded(true);
   };
 
-  // If no source is provided at all, fallback immediately
-  useEffect(() => {
-    if (!src) {
-      setError(true);
-      setCurrentSrc(fallbackSrc);
-      setIsLoading(false);
-    }
-  }, [src, fallbackSrc]);
-
   return (
-    <div className={`relative overflow-hidden ${className}`}>
-      {/* Background / Placeholder during loading */}
-      <div className="absolute inset-0 bg-neutral-900 flex flex-col items-center justify-center p-4">
-        <img 
-          src={APP_LOGO} 
-          alt="App Logo Placeholder" 
-          className="w-1/3 max-w-[64px] opacity-20 grayscale"
-        />
-        {isLoading && showLoader && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-            <Loader2 className="text-purple-500 animate-spin" size={20} />
-          </div>
-        )}
-      </div>
-
-      {/* Main Image */}
-      <AnimatePresence mode="wait">
-        <motion.img
-          key={currentSrc}
-          src={currentSrc}
-          alt={alt}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: isLoading ? 0 : 1 }}
-          transition={{ duration: 0.4 }}
-          onLoad={handleLoad}
-          onError={handleError}
-          className={`w-full h-full object-${objectFit} relative z-10 ${imgClassName}`}
-          referrerPolicy="no-referrer"
-        />
-      </AnimatePresence>
-
-      {/* Error State Overlay (Optional debug hint) */}
-      {error && (
-        <div className="absolute top-2 right-2 z-20 pointer-events-none opacity-50">
-          {/* We could show a small icon here if we want to indicate failure, but user wants clean fallback */}
-        </div>
+    <div className={`relative overflow-hidden bg-neutral-900 ${className}`}>
+      {!loaded && (
+        <div className="absolute inset-0 bg-gradient-to-br from-neutral-900 via-[#0d1630] to-neutral-900 animate-pulse" />
       )}
+      <img
+        ref={imgRef}
+        src={currentSrc}
+        alt={alt}
+        loading="eager"
+        decoding="async"
+        onLoad={handleLoad}
+        onError={handleError}
+        style={{ objectFit }}
+        className={`w-full h-full relative z-10 transition-opacity duration-150 ${
+          loaded ? 'opacity-100' : 'opacity-0'
+        } ${imgClassName}`}
+        referrerPolicy="no-referrer"
+      />
     </div>
   );
 }

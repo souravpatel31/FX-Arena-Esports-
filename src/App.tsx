@@ -9,7 +9,7 @@ import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs, writeBatch, onSnapshot, increment, updateDoc } from 'firebase/firestore';
 import { GAMES } from './constants';
-import { isAuthorizedAdmin } from './utils/adminAuth';
+import { isAuthorizedAdmin, hasControlPanelAccess, STAFF_EMAILS } from './utils/adminAuth';
 import { WELCOME_SPLASH_URL } from './utils/assetUrl';
 
 // Pages
@@ -71,7 +71,8 @@ const pageToPath = {
   [Page.GAME_MODES]: '/game-modes',
   [Page.ADMIN_MODES]: '/admin/modes',
   [Page.LEADERBOARD]: '/leaderboard',
-  [Page.MATCH_DETAILS]: '/match-details'
+  [Page.MATCH_DETAILS]: '/match-details',
+  [Page.DOWNLOAD]: '/download'
 };
 
 const pathToPage: Record<string, Page> = {
@@ -94,7 +95,8 @@ const pathToPage: Record<string, Page> = {
   '/profile/stats': Page.GAME_STATS,
   '/game-modes': Page.GAME_MODES,
   '/admin/modes': Page.ADMIN_MODES,
-  '/leaderboard': Page.LEADERBOARD
+  '/leaderboard': Page.LEADERBOARD,
+  '/download': Page.DOWNLOAD
 };
 
 function ScrollToTop() {
@@ -148,6 +150,7 @@ export default function App() {
 
   useEffect(() => {
     let unsubscribeUser: (() => void) | null = null;
+    let unsubscribeRegistrations: (() => void) | null = null;
 
     const seedDatabase = async (email: string, uid: string) => {
       if (!isAuthorizedAdmin({ email, uid })) return;
@@ -215,16 +218,18 @@ export default function App() {
           console.log('Game rules seeded');
         }
 
-        // Seeding app settings (avoid saving localhost/internal preview origins)
+        // Seeding app settings (avoid saving localhost/internal/github preview origins)
         const isInternalOrigin = (u: string) =>
           !u ||
           u.includes('localhost') ||
           u.includes('127.0.0.1') ||
           u.includes('ais-dev') ||
-          u.includes('ais-pre') ||
-          u.includes('secret-scanner-g7cvm.web.app');
-        const envSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
-        const envApkUrl = (import.meta.env.VITE_APK_DOWNLOAD_URL || '').trim();
+          u.includes('secret-scanner-g7cvm.web.app') ||
+          u.toLowerCase().includes('github');
+        const rawEnvSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
+        const envSiteUrl = !isInternalOrigin(rawEnvSiteUrl) ? rawEnvSiteUrl : '';
+        const rawEnvApkUrl = (import.meta.env.VITE_APK_DOWNLOAD_URL || '').trim();
+        const envApkUrl = !isInternalOrigin(rawEnvApkUrl) ? rawEnvApkUrl : '';
         const safeBaseUrl = envSiteUrl || (!isInternalOrigin(window.location.origin) ? window.location.origin : '');
 
         const settingsSnap = await getDoc(doc(db, 'appSettings', 'referral_support'));
@@ -287,6 +292,21 @@ export default function App() {
           await batch.commit();
           console.log('Game modes seeded from constants');
         }
+        // Ensure Staff Control users have trusted /staff/{uid} role doc
+        for (const staffEmail of STAFF_EMAILS) {
+          try {
+            const staffUsersSnap = await getDocs(query(collection(db, 'users'), where('email', '==', staffEmail)));
+            for (const uDoc of staffUsersSnap.docs) {
+              await setDoc(doc(db, 'staff', uDoc.id), {
+                email: staffEmail,
+                role: 'match_staff',
+                updatedAt: serverTimestamp()
+              }, { merge: true });
+            }
+          } catch (staffErr) {
+            console.warn('Could not sync staff role doc:', staffErr);
+          }
+        }
       } catch (error) {
         console.error('Error seeding database:', error);
       }
@@ -296,6 +316,10 @@ export default function App() {
       if (unsubscribeUser) {
         unsubscribeUser();
         unsubscribeUser = null;
+      }
+      if (unsubscribeRegistrations) {
+        unsubscribeRegistrations();
+        unsubscribeRegistrations = null;
       }
 
       if (firebaseUser) {
@@ -394,15 +418,18 @@ export default function App() {
           setLoading(false);
         });
 
-        // Also fetch registrations
-        try {
-          const q = query(collection(db, 'registrations'), where('userId', '==', firebaseUser.uid));
-          const regSnap = await getDocs(q);
-          const matchIds = regSnap.docs.map(doc => doc.data().tournamentId);
-          setJoinedMatchIds(matchIds);
-        } catch (error) {
-          console.error("Error fetching registrations:", error);
-        }
+        // Listen for player's joined registrations in real-time
+        const regQuery = query(collection(db, 'registrations'), where('userId', '==', firebaseUser.uid));
+        unsubscribeRegistrations = onSnapshot(
+          regQuery,
+          (regSnap) => {
+            const matchIds = regSnap.docs.map(doc => doc.data().tournamentId).filter(Boolean);
+            setJoinedMatchIds(matchIds);
+          },
+          (error) => {
+            handleFirestoreError(error, OperationType.LIST, 'registrations');
+          }
+        );
       } else {
         setIsLoggedIn(false);
         setUser(null);
@@ -420,6 +447,7 @@ export default function App() {
     return () => {
       unsubscribeAuth();
       if (unsubscribeUser) unsubscribeUser();
+      if (unsubscribeRegistrations) unsubscribeRegistrations();
     };
   }, []);
 
@@ -439,7 +467,7 @@ export default function App() {
   const handlePageChange = (page: Page, id?: string) => {
     let path = pageToPath[page];
     if (id) {
-      if (page === Page.TOURNAMENTS) path = `${path}/${id}`;
+      if (page === Page.TOURNAMENTS) path = id.startsWith('?') ? `${path}${id}` : `${path}/${id}`;
       else if (page === Page.JOIN_MATCH) path = `${path}/${id}`;
       else if (page === Page.MATCH_DETAILS) path = `${path}/${id}`;
       else if (page === Page.ADMIN_USER_PROFILE) path = `${path}/${id}`;
@@ -561,7 +589,7 @@ export default function App() {
           <div className="relative w-full max-w-lg h-full flex items-center justify-center">
             <img
               src={WELCOME_SPLASH_URL}
-              alt="Welcome to FX Arena Esports"
+              alt="Welcome to FX Arena eSport"
               className="w-full h-full object-contain"
             />
             <motion.div
@@ -627,6 +655,25 @@ export default function App() {
       );
     }
     if (!isAuthorizedAdmin(user) || !isAuthorizedAdmin(auth.currentUser)) {
+      return <Navigate to="/home" replace />;
+    }
+    return <>{children}</>;
+  };
+
+  // Staff + Super Admin route wrapper for Match Create/Edit/Results/IDP & Notifications
+  const StaffOrAdminRoute = ({ children }: { children: React.ReactNode }) => {
+    if (!isLoggedIn && !loading) {
+      return <Navigate to="/login" replace />;
+    }
+    if (!user && isLoggedIn) {
+      return (
+        <div className="flex flex-col items-center justify-center pt-24">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Verifying access...</p>
+        </div>
+      );
+    }
+    if (!hasControlPanelAccess(user) || !hasControlPanelAccess(auth.currentUser)) {
       return <Navigate to="/home" replace />;
     }
     return <>{children}</>;
@@ -762,9 +809,9 @@ export default function App() {
               } />
 
               <Route path="/admin" element={
-                <AdminRoute>
+                <StaffOrAdminRoute>
                   <AdminPage onPageChange={handlePageChange} />
-                </AdminRoute>
+                </StaffOrAdminRoute>
               } />
 
               <Route path="/admin/user/:id" element={
@@ -774,21 +821,21 @@ export default function App() {
               } />
 
               <Route path="/admin/match/edit/:id" element={
-                <AdminRoute>
+                <StaffOrAdminRoute>
                   <AdminEditMatch onPageChange={handlePageChange} />
-                </AdminRoute>
+                </StaffOrAdminRoute>
               } />
 
               <Route path="/admin/match/create" element={
-                <AdminRoute>
+                <StaffOrAdminRoute>
                   <AdminCreateMatch onPageChange={handlePageChange} />
-                </AdminRoute>
+                </StaffOrAdminRoute>
               } />
 
               <Route path="/admin/match/create/:duplicateId" element={
-                <AdminRoute>
+                <StaffOrAdminRoute>
                   <AdminCreateMatch onPageChange={handlePageChange} />
-                </AdminRoute>
+                </StaffOrAdminRoute>
               } />
 
               <Route path="/admin/modes" element={

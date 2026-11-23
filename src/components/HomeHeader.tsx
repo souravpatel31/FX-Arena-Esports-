@@ -12,7 +12,7 @@ interface HomeHeaderProps {
 }
 
 export default function HomeHeader({ user, onPageChange, onOpenNotifications }: HomeHeaderProps) {
-  const displayName = user?.username || 'FX Arena Esports';
+  const displayName = user?.username || 'FX Arena eSport';
   const totalBalance = (user?.wallet?.deposit || 0) + (user?.wallet?.winnings || 0) + (user?.wallet?.bonus || 0);
   const [unreadCount, setUnreadCount] = useState(0);
 
@@ -50,7 +50,7 @@ export default function HomeHeader({ user, onPageChange, onOpenNotifications }: 
           <div className="w-11 h-11 rounded-full bg-gradient-to-b from-[#162238] to-[#0a1220] p-0.5 border border-[#223963] shadow-lg flex items-center justify-center overflow-hidden">
             <img
               src={APP_LOGO_URL}
-              alt="FX Arena"
+              alt="FX Arena eSport"
               className="w-full h-full rounded-full object-cover"
             />
           </div>

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { ChevronLeft, Loader2, Gamepad, X, Trophy, Star, Plus } from 'lucide-react';
+import { ChevronLeft, Loader2, Gamepad, X, Trophy, Key, Copy, Check } from 'lucide-react';
 import { Page, Tournament } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, where, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy, doc, getDoc } from 'firebase/firestore';
 import RulesModal from '../components/RulesModal';
 import SafeImage from '../components/SafeImage';
 
@@ -73,6 +73,7 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
   const [searchParams] = useSearchParams();
   const selectedGameId = gameId;
   const selectedModeId = searchParams.get('mode');
+  const isMyMatches = searchParams.get('my') === '1' || searchParams.get('my') === 'true';
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [gameModes, setGameModes] = useState<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,7 +86,15 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
   // Tabs: Ongoing, Upcoming, Resulted
   const statusParam = searchParams.get('status') as 'upcoming' | 'ongoing' | 'completed' | null;
   const [activeTab, setActiveTab] = useState<'upcoming' | 'ongoing' | 'completed'>(statusParam || 'upcoming');
-  const [showIdPass, setShowIdPass] = useState<{ isOpen: boolean; roomId?: string; roomPass?: string }>({ isOpen: false });
+  const [showIdPass, setShowIdPass] = useState<{
+    isOpen: boolean;
+    loading?: boolean;
+    matchTitle?: string;
+    roomId?: string;
+    roomPass?: string;
+    roomNotes?: string;
+  }>({ isOpen: false });
+  const [copiedField, setCopiedField] = useState<'id' | 'pass' | 'both' | null>(null);
 
   useEffect(() => {
     if (statusParam && (statusParam === 'upcoming' || statusParam === 'ongoing' || statusParam === 'completed')) {
@@ -93,13 +102,48 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
     }
   }, [statusParam]);
 
-  const handleCopy = (text: string) => {
+  const handleCopy = (text: string, field: 'id' | 'pass' | 'both') => {
     if (!text) return;
     navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
+
+  const handleOpenViewIdp = async (t: Tournament) => {
+    setCopiedField(null);
+    setShowIdPass({
+      isOpen: true,
+      loading: true,
+      matchTitle: t.title,
+      roomId: t.roomId || '',
+      roomPass: t.roomPassword || '',
+      roomNotes: t.roomNotes || '',
+    });
+    try {
+      const credSnap = await getDoc(doc(db, 'matchCredentials', t.id));
+      if (credSnap.exists()) {
+        const d = credSnap.data();
+        setShowIdPass({
+          isOpen: true,
+          loading: false,
+          matchTitle: t.title,
+          roomId: d.roomId || t.roomId || '',
+          roomPass: d.roomPassword || t.roomPassword || '',
+          roomNotes: d.roomNotes || '',
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn('Unable to read matchCredentials:', err);
+    }
+    setShowIdPass((prev) => ({ ...prev, loading: false }));
   };
 
   // Derive page title accurately based on the active section / mode
   const getPageTitle = () => {
+    if (isMyMatches) {
+      return 'MY MATCHES';
+    }
     if (selectedModeId) {
       const modeIdLower = selectedModeId.toLowerCase().trim();
       const modeIdClean = modeIdLower.replace(/[_-]/g, ' ').trim();
@@ -199,13 +243,23 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
     return 'BR FULL MAP CONTESTS';
   };
 
+  const currentUid = auth.currentUser?.uid || '';
+
+  const isMatchJoinedByUser = (m: Tournament) => {
+    if (joinedMatchIds.includes(m.id)) return true;
+    if (!currentUid) return false;
+    return (m.players || []).some((p) => p.userId === currentUid);
+  };
+
   const filteredMatches = tournaments.filter(m => {
+    if (isMyMatches && !isMatchJoinedByUser(m)) {
+      return false;
+    }
+
     const status = m.status || 'upcoming';
     // Handle legacy 'active' status
-    if (status === 'active' && activeTab === 'upcoming') return true;
-
-    // Status filter
-    if (status !== activeTab) return false;
+    const matchesStatus = status === activeTab || (status === 'active' && activeTab === 'upcoming');
+    if (!matchesStatus) return false;
 
     // Mode filter (if provided)
     if (selectedModeId) {
@@ -452,15 +506,28 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
           <div className="py-20 flex flex-col items-center justify-center bg-[#09152b] rounded-3xl border border-dashed border-[#1a315e] px-6 text-center">
             <Gamepad size={36} className="text-[#203c74] mb-3" />
             <p className="text-xs font-black uppercase tracking-widest text-neutral-400">
-              No {activeTab === 'completed' ? 'resulted' : activeTab} tournaments found
+              {isMyMatches
+                ? `No ${activeTab === 'completed' ? 'resulted' : activeTab} joined matches`
+                : `No ${activeTab === 'completed' ? 'resulted' : activeTab} tournaments found`}
             </p>
             <p className="text-[10px] text-neutral-500 mt-1 font-medium">
-              Check back soon for new battleground contests!
+              {isMyMatches
+                ? 'Join a Free Fire match first — only matches you join appear here.'
+                : 'Check back soon for new battleground contests!'}
             </p>
+            {isMyMatches && (
+              <button
+                type="button"
+                onClick={() => onPageChange(Page.HOME)}
+                className="mt-4 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-[11px] font-black uppercase tracking-wider shadow-md active:scale-95 transition-all"
+              >
+                Browse Matches
+              </button>
+            )}
           </div>
         ) : (
           filteredMatches.map((t, idx) => {
-            const isJoined = joinedMatchIds.includes(t.id);
+            const isJoined = isMatchJoinedByUser(t);
             const isOngoing = t.status === 'ongoing';
             const isCompleted = t.status === 'completed';
 
@@ -696,26 +763,23 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                       onClick={(e) => {
                         e.stopPropagation();
                         if (isCompleted) {
+                          setSelectedResultsMatch(t);
+                          return;
+                        }
+                        if (isOngoing) {
                           if (isJoined) {
-                            setSelectedResultsMatch(t);
-                            return;
+                            handleOpenViewIdp(t);
                           }
-                        } else if (isOngoing) {
-                          if (isJoined) {
-                            setShowIdPass({ isOpen: true, roomId: t.roomId, roomPass: t.roomPassword });
-                            return;
-                          }
+                          return;
                         }
                         onPageChange(Page.MATCH_DETAILS, t.id);
                       }}
-                      className={`px-6 sm:px-7 py-2 rounded-xl text-xs sm:text-sm font-bold tracking-wide shadow-md transition-all shrink-0 active:scale-95 ${
+                      className={`px-5 sm:px-6 py-2 rounded-xl text-xs sm:text-sm font-bold tracking-wide shadow-md transition-all shrink-0 active:scale-95 ${
                         isCompleted
-                          ? isJoined
-                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                            : 'bg-neutral-300 text-neutral-600 cursor-default'
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                           : isOngoing
                           ? isJoined
-                            ? 'bg-amber-500 hover:bg-amber-600 text-white animate-pulse'
+                            ? 'bg-amber-500 hover:bg-amber-600 text-white'
                             : 'bg-neutral-300 text-neutral-600 cursor-not-allowed'
                           : isJoined
                           ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
@@ -723,13 +787,11 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                       }`}
                     >
                       {isCompleted
-                        ? isJoined
-                          ? 'Results'
-                          : 'Finished'
+                        ? 'Results'
                         : isOngoing
                         ? isJoined
-                          ? 'ID Pass'
-                          : 'Live'
+                          ? 'View IDP'
+                          : 'Joined Only'
                         : isJoined
                         ? 'Joined'
                         : 'Join'}
@@ -958,14 +1020,10 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                   </div>
 
                   <div className="flex-1 overflow-y-auto no-scrollbar space-y-2.5 pr-1">
-                    {matchResults.results
-                      ?.sort((a: any, b: any) => {
-                        const isSurvival = matchResults.prizeType === 'survival' || matchResults.section !== 'Battle Royale';
-                        if (isSurvival) return a.rankOrKills - b.rankOrKills;
-                        return b.rankOrKills - a.rankOrKills;
-                      })
+                    {[...(matchResults.results || [])]
+                      .sort((a: any, b: any) => (Number(b.winningAmount) || 0) - (Number(a.winningAmount) || 0))
                       .map((res: any, idx: number) => {
-                        const isWinner = res.rankOrKills === 1 && (matchResults.prizeType === 'survival' || matchResults.section !== 'Battle Royale');
+                        const isWinner = (Number(res.winningAmount) || 0) > 0 && idx === 0;
 
                         return (
                           <div
@@ -973,6 +1031,8 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                             className={`flex items-center justify-between p-3.5 rounded-xl border transition-all ${
                               isWinner
                                 ? 'bg-amber-500/10 border-amber-500/30'
+                                : (Number(res.winningAmount) || 0) > 0
+                                ? 'bg-emerald-500/5 border-emerald-500/20'
                                 : 'bg-[#0d1e3d] border-[#1b3464]'
                             }`}
                           >
@@ -982,22 +1042,21 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
                                   ? 'bg-amber-400 text-black border-amber-300'
                                   : 'bg-[#142850] text-neutral-300 border-white/10'
                               }`}>
-                                {matchResults.prizeType === 'perKill' ? 'K' : `#${res.rankOrKills}`}
+                                #{idx + 1}
                               </div>
                               <div>
                                 <h4 className={`text-xs font-bold ${isWinner ? 'text-amber-300' : 'text-white'}`}>
                                   {res.ign || res.username}
                                 </h4>
-                                {matchResults.prizeType === 'perKill' && (
-                                  <p className="text-[8px] font-bold uppercase text-neutral-400 tracking-wider">
-                                    {res.rankOrKills} Kills
-                                  </p>
-                                )}
+                                <p className="text-[8px] font-bold uppercase text-neutral-400 tracking-wider">
+                                  @{res.username || 'player'}
+                                  {res.rankOrKills > 0 ? ` • ${matchResults.prizeType === 'perKill' ? `${res.rankOrKills} Kills` : `Rank #${res.rankOrKills}`}` : ''}
+                                </p>
                               </div>
                             </div>
                             <div className="text-right">
-                              <p className={`text-xs sm:text-sm font-black ${res.winningAmount > 0 ? 'text-emerald-400' : 'text-neutral-500'}`}>
-                                {res.winningAmount > 0 ? `+₹${res.winningAmount}` : '₹0'}
+                              <p className={`text-xs sm:text-sm font-black ${(Number(res.winningAmount) || 0) > 0 ? 'text-emerald-400' : 'text-neutral-500'}`}>
+                                {(Number(res.winningAmount) || 0) > 0 ? `+${res.winningAmount} Coins` : '0 Coins'}
                               </p>
                             </div>
                           </div>
@@ -1022,78 +1081,121 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
         )}
       </AnimatePresence>
 
-      {/* ID Pass Modal */}
+      {/* Full-Screen Centered View IDP Overlay (Joined Players Only) */}
       <AnimatePresence>
         {showIdPass.isOpen && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/85 backdrop-blur-xs"
+            className="fixed inset-0 z-50 flex items-center justify-center p-5 bg-black/95 backdrop-blur-md"
             onClick={() => setShowIdPass({ isOpen: false })}
           >
             <motion.div
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
-              className="w-full max-w-sm bg-[#09152b] border border-[#1b3464] rounded-3xl p-6 shadow-2xl relative overflow-hidden"
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              className="w-full max-w-sm bg-[#09152b] border border-[#1e3a6e] rounded-[2rem] p-6 shadow-2xl relative text-center"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between mb-6 relative">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-11 h-11 rounded-2xl bg-amber-500/10 flex items-center justify-center text-amber-400 border border-amber-500/20">
-                    <Star size={22} />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-black uppercase tracking-tight text-white line-clamp-1">Room Credentials</h3>
-                    <p className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Authorized Battleground Access</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowIdPass({ isOpen: false })}
-                  className="p-1.5 bg-[#122347] text-neutral-400 rounded-xl hover:text-white transition-colors"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-
-              <div className="space-y-3 mb-6 relative z-10">
-                <div className="p-3.5 bg-[#0d1e3d] rounded-xl border border-[#1b3464]">
-                  <p className="text-[8px] font-bold uppercase text-neutral-400 tracking-wider mb-1">Room ID</p>
-                  <div className="flex items-center justify-between">
-                    <p className="text-base font-black text-white tracking-widest">{showIdPass.roomId || 'PENDING'}</p>
-                    <button
-                      onClick={() => handleCopy(showIdPass.roomId || '')}
-                      className="p-1.5 bg-[#142850] text-neutral-300 rounded-lg hover:text-white transition-colors"
-                    >
-                      <Plus size={13} />
-                    </button>
-                  </div>
-                </div>
-                <div className="p-3.5 bg-[#0d1e3d] rounded-xl border border-[#1b3464]">
-                  <p className="text-[8px] font-bold uppercase text-neutral-400 tracking-wider mb-1">Password</p>
-                  <div className="flex items-center justify-between">
-                    <p className="text-base font-black text-white tracking-widest">{showIdPass.roomPass || 'PENDING'}</p>
-                    <button
-                      onClick={() => handleCopy(showIdPass.roomPass || '')}
-                      className="p-1.5 bg-[#142850] text-neutral-300 rounded-lg hover:text-white transition-colors"
-                    >
-                      <Plus size={13} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <p className="text-[9px] text-amber-400/80 font-medium bg-amber-500/10 p-3 rounded-xl border border-amber-500/20 mb-6 leading-relaxed">
-                Authorized access. Do not share room credentials. Multiple logins on the same credentials will trigger an anti-cheat flag.
-              </p>
-
               <button
                 onClick={() => setShowIdPass({ isOpen: false })}
-                className="w-full py-3 bg-[#4285f4] hover:bg-[#3367d6] text-white text-xs font-bold uppercase tracking-wider rounded-xl active:scale-95 transition-transform shadow-md"
+                className="absolute top-4 right-4 p-2 bg-[#122347] text-neutral-300 rounded-xl hover:text-white transition-colors"
+                aria-label="Close"
               >
-                Enter Battle
+                <X size={18} />
               </button>
+
+              <div className="w-14 h-14 rounded-2xl bg-amber-500/15 border border-amber-500/35 text-amber-400 flex items-center justify-center mx-auto mb-3 shadow-inner">
+                <Key size={26} />
+              </div>
+
+              <h3 className="text-base font-black uppercase tracking-tight text-white">
+                Match Room IDP
+              </h3>
+              <p className="text-[11px] font-bold text-cyan-300 uppercase tracking-wider mt-0.5 line-clamp-1">
+                {showIdPass.matchTitle || 'Custom Room'}
+              </p>
+
+              {showIdPass.loading ? (
+                <div className="py-10 flex flex-col items-center justify-center">
+                  <Loader2 size={28} className="text-amber-400 animate-spin mb-2" />
+                  <p className="text-[11px] font-bold text-neutral-400 uppercase tracking-wider">Loading Room IDP...</p>
+                </div>
+              ) : (
+                <div className="space-y-3.5 my-5">
+                  <div className="p-4 bg-[#050d1c] rounded-2xl border border-[#1b3464]">
+                    <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest mb-1.5">
+                      Room ID
+                    </p>
+                    <p className="text-2xl font-mono font-black text-amber-300 tracking-widest select-all">
+                      {showIdPass.roomId || 'PENDING'}
+                    </p>
+                    {showIdPass.roomId && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(showIdPass.roomId || '', 'id')}
+                        className={`mt-2.5 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
+                          copiedField === 'id'
+                            ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                            : 'bg-[#142850] hover:bg-[#1b366a] text-white border border-white/10'
+                        }`}
+                      >
+                        {copiedField === 'id' ? <Check size={13} /> : <Copy size={13} />}
+                        <span>{copiedField === 'id' ? 'Copied ID!' : 'Copy Room ID'}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="p-4 bg-[#050d1c] rounded-2xl border border-[#1b3464]">
+                    <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest mb-1.5">
+                      Password
+                    </p>
+                    <p className="text-2xl font-mono font-black text-emerald-300 tracking-widest select-all">
+                      {showIdPass.roomPass || 'PENDING'}
+                    </p>
+                    {showIdPass.roomPass && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(showIdPass.roomPass || '', 'pass')}
+                        className={`mt-2.5 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-[11px] font-black uppercase tracking-wider transition-all ${
+                          copiedField === 'pass'
+                            ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300'
+                            : 'bg-[#142850] hover:bg-[#1b366a] text-white border border-white/10'
+                        }`}
+                      >
+                        {copiedField === 'pass' ? <Check size={13} /> : <Copy size={13} />}
+                        <span>{copiedField === 'pass' ? 'Copied Pass!' : 'Copy Password'}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {showIdPass.roomNotes && (
+                    <p className="text-[11px] text-neutral-300 bg-white/5 rounded-xl p-2.5 border border-white/10">
+                      {showIdPass.roomNotes}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {showIdPass.roomId && showIdPass.roomPass && (
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(`Room ID: ${showIdPass.roomId} | Password: ${showIdPass.roomPass}`, 'both')}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-wider rounded-xl active:scale-95 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25"
+                  >
+                    {copiedField === 'both' ? <Check size={15} /> : <Copy size={15} />}
+                    <span>{copiedField === 'both' ? 'Copied Room ID & Pass!' : 'Copy Both ID & Pass'}</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowIdPass({ isOpen: false })}
+                  className="w-full py-3 bg-[#122347] hover:bg-[#19305e] text-white text-xs font-bold uppercase tracking-wider rounded-xl active:scale-95 transition-transform"
+                >
+                  Close
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}

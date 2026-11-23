@@ -3,14 +3,15 @@ import { motion } from 'motion/react';
 import { useParams } from 'react-router-dom';
 import { 
   ArrowLeft, Save, Loader2, Gamepad2, Map as MapIcon, Users as UsersIcon, 
-  Clock, DollarSign, Trophy, Layers, ChevronDown, Image as ImageIcon, Upload, Trash2, CheckCircle2 
+  Clock, DollarSign, Trophy, Layers, ChevronDown, Image as ImageIcon, Upload, Trash2, CheckCircle2, AlertCircle
 } from 'lucide-react';
 import { Page, Tournament } from '../types';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { sendEmailVerification } from 'firebase/auth';
 import { doc, getDoc, updateDoc, serverTimestamp, getDocs, collection, query, orderBy } from 'firebase/firestore';
 import { GameMode } from './AdminModes';
-import { uploadOriginalImage } from '../utils/imageCompressor';
-import { isAuthorizedAdmin } from '../utils/adminAuth';
+import { uploadOriginalImage, compactImageForFirestore } from '../utils/imageCompressor';
+import { hasControlPanelAccess, isStaffUser } from '../utils/adminAuth';
 
 interface AdminEditMatchProps {
   onPageChange: (page: Page) => void;
@@ -63,6 +64,9 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
   const [loadingModes, setLoadingModes] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [verificationFeedback, setVerificationFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [matchForm, setMatchForm] = useState({
@@ -117,10 +121,31 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
   }, [matchForm.gameId]);
 
   useEffect(() => {
-    if (!isAuthorizedAdmin(auth.currentUser)) {
+    const currentUser = auth.currentUser;
+    if (!hasControlPanelAccess(currentUser)) {
       onPageChange(Page.HOME);
       return;
     }
+
+    const checkWriteReadiness = async () => {
+      if (!currentUser) return;
+      if (currentUser.uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1' || currentUser.emailVerified) {
+        setNeedsVerification(false);
+        return;
+      }
+      try {
+        if (isStaffUser(currentUser)) {
+          const staffSnap = await getDoc(doc(db, 'staff', currentUser.uid));
+          setNeedsVerification(!staffSnap.exists());
+        } else {
+          const adminSnap = await getDoc(doc(db, 'admins', currentUser.uid));
+          setNeedsVerification(!adminSnap.exists());
+        }
+      } catch {
+        setNeedsVerification(!currentUser.emailVerified);
+      }
+    };
+    checkWriteReadiness();
 
     if (!matchId) {
       onPageChange(Page.ADMIN);
@@ -301,9 +326,32 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
   const handleUpdateMatch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!matchId) return;
+    setFormError(null);
+
+    const cleanTitle = matchForm.title.trim();
+    if (!cleanTitle) {
+      setFormError('Match Title is required.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
 
     if (!matchForm.gameId || !matchForm.map) {
-      alert('Please select game and map');
+      setFormError('Please select Game and Map.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const cleanTime = (matchForm.time || '').trim();
+    if (!cleanTime) {
+      setFormError('Please select Schedule Time.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const slotsNum = Number(matchForm.totalSlots);
+    if (!Number.isFinite(slotsNum) || slotsNum < 1) {
+      setFormError('Total Slots must be at least 1.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
@@ -316,21 +364,24 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
         } catch (imgErr) {
           console.warn('Image upload warning:', imgErr);
         }
+        if (finalImage.startsWith('data:')) {
+          finalImage = await compactImageForFirestore(finalImage, 110_000);
+        }
       }
 
       const matchRef = doc(db, 'matches', matchId);
       const updateData: any = {
-        title: matchForm.title,
+        title: cleanTitle,
         gameId: matchForm.gameId,
         modeId: matchForm.modeId || matchForm.selectedModeDocId || 'br_solo',
         image: finalImage,
-        entryFee: Number(matchForm.entryFee),
-        maxPlayers: Number(matchForm.totalSlots || 0),
-        totalSlots: Number(matchForm.totalSlots || 0),
-        time: matchForm.time,
+        entryFee: Number(matchForm.entryFee) || 0,
+        maxPlayers: slotsNum,
+        totalSlots: slotsNum,
+        time: cleanTime,
         map: matchForm.map,
-        mode: matchForm.mode,
-        section: matchForm.section,
+        mode: (matchForm.mode || 'Solo').trim(),
+        section: (matchForm.section || 'Battle Royale').trim(),
         updatedAt: serverTimestamp()
       };
 
@@ -362,9 +413,15 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
       await updateDoc(matchRef, updateData);
       alert('Match updated successfully!');
       onPageChange(Page.ADMIN);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error updating match:", e);
       handleFirestoreError(e, OperationType.UPDATE, `matches/${matchId}`);
+      const rawMsg = String(e?.message || e?.code || 'Failed to update match');
+      const friendlyMsg = rawMsg.toLowerCase().includes('permission')
+        ? 'Permission denied: Please verify your Staff/Admin email above (or ask Super Admin to sync your Staff role) and try again.'
+        : rawMsg;
+      setFormError(friendlyMsg);
+      alert(friendlyMsg);
     } finally {
       setIsProcessing(false);
     }
@@ -385,6 +442,7 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
         {/* Header */}
         <div className="flex items-center gap-4 mb-6">
           <button 
+            type="button"
             onClick={() => onPageChange(Page.ADMIN)}
             className="p-2.5 bg-neutral-900 border border-neutral-800 rounded-xl text-neutral-400 hover:text-white transition-colors"
           >
@@ -398,7 +456,71 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
           </div>
         </div>
 
-        <form onSubmit={handleUpdateMatch} className="space-y-5">
+        {needsVerification && (
+          <div className="mb-5 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-amber-200 space-y-2.5">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-xs leading-snug">
+                <p className="font-black uppercase tracking-wider text-amber-300">
+                  Email Verification Needed To Save Changes
+                </p>
+                <p className="text-neutral-300 mt-0.5">
+                  Verify your email once so Firestore allows updating matches.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (auth.currentUser) {
+                      await sendEmailVerification(auth.currentUser);
+                      setVerificationFeedback('Verification link sent to your email! Click it, then tap Refresh Status.');
+                    }
+                  } catch (err: any) {
+                    setVerificationFeedback(err?.message || 'Could not send email.');
+                  }
+                }}
+                className="flex-1 py-2 px-3 bg-amber-500 text-black rounded-xl text-[10px] font-black uppercase tracking-wider"
+              >
+                Send Verification Link
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (auth.currentUser) {
+                    await auth.currentUser.reload();
+                    await auth.currentUser.getIdToken(true);
+                    const staffSnap = await getDoc(doc(db, 'staff', auth.currentUser.uid)).catch(() => null);
+                    if (auth.currentUser.emailVerified || staffSnap?.exists()) {
+                      setNeedsVerification(false);
+                      setVerificationFeedback(null);
+                      setFormError(null);
+                    } else {
+                      setVerificationFeedback('Not verified yet. Open the link in your inbox first.');
+                    }
+                  }
+                }}
+                className="py-2 px-3 bg-white/10 hover:bg-white/20 text-white rounded-xl text-[10px] font-black uppercase tracking-wider"
+              >
+                Refresh Status
+              </button>
+            </div>
+            {verificationFeedback && (
+              <p className="text-[10px] font-bold text-amber-300">{verificationFeedback}</p>
+            )}
+          </div>
+        )}
+
+        {formError && (
+          <div className="mb-5 p-3.5 rounded-2xl bg-red-500/15 border border-red-500/40 text-red-200 flex items-start gap-2.5 text-xs font-bold">
+            <AlertCircle size={16} className="text-red-400 shrink-0 mt-0.5" />
+            <p className="flex-1 leading-snug">{formError}</p>
+          </div>
+        )}
+
+        <form onSubmit={handleUpdateMatch} noValidate className="space-y-5">
           {/* Title */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-black uppercase tracking-widest text-neutral-400 ml-1">Match Title *</label>
@@ -890,9 +1012,16 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
             )}
           </div>
 
+          {formError && (
+            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/40 text-red-200 flex items-start gap-2.5 text-xs font-bold">
+              <AlertCircle size={16} className="text-red-400 shrink-0 mt-0.5" />
+              <p className="flex-1 leading-snug">{formError}</p>
+            </div>
+          )}
+
           <button 
             type="submit"
-            disabled={isProcessing}
+            disabled={isProcessing || isUploadingImage}
             className="w-full py-4.5 bg-purple-600 hover:bg-purple-700 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl shadow-purple-600/30 mt-6 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-white"
           >
             {isProcessing ? (

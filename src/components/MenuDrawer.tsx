@@ -182,7 +182,7 @@ export default function MenuDrawer({
                 </div>
                 <div>
                   <h3 className="text-base font-black uppercase tracking-tight text-white">
-                    FX Arena Esports
+                    FX Arena eSport
                   </h3>
                   <p className="text-[10px] font-bold text-cyan-400 uppercase tracking-widest">
                     Quick Navigation Menu

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Star, Plus, X, Loader2 } from 'lucide-react';
+import { Trophy, Key, Copy, Check, X, Loader2 } from 'lucide-react';
 import { Page, User, Tournament, Banner } from '../types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, onSnapshot, query, orderBy, where } from 'firebase/firestore';
@@ -44,12 +44,15 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
   const [banners, setBanners] = useState<Banner[]>([]);
   const [heroBanners, setHeroBanners] = useState<Banner[]>([]);
   const [showIdPass, setShowIdPass] = useState<{ isOpen: boolean; roomId?: string; roomPass?: string }>({ isOpen: false });
+  const [copiedIdpField, setCopiedIdpField] = useState<'id' | 'pass' | null>(null);
 
   useModalBackHandler(showIdPass.isOpen, () => setShowIdPass({ isOpen: false }));
 
-  const handleCopy = (text: string) => {
+  const handleCopy = (text: string, field: 'id' | 'pass') => {
     if (!text) return;
     navigator.clipboard.writeText(text);
+    setCopiedIdpField(field);
+    setTimeout(() => setCopiedIdpField(null), 2000);
   };
 
   useEffect(() => {
@@ -125,7 +128,7 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
 
       {/* 2. Announcement / Rules Bar */}
       <AnnouncementBar
-        text="FX ARENA ESPORTS — MAIN RULES & TELEGRAM CHANNEL"
+        text="FX ARENA ESPORT — MAIN RULES & TELEGRAM CHANNEL"
         onClick={() => {
           if (matches.length > 0) {
             setSelectedRulesMatch(matches[0]);
@@ -368,17 +371,10 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
                   </div>
 
                   <div className="flex-1 overflow-y-auto no-scrollbar space-y-2.5 pr-1">
-                    {matchResults.results
-                      ?.sort((a: any, b: any) => {
-                        const isSurvival =
-                          matchResults.prizeType === 'survival' || matchResults.section !== 'Battle Royale';
-                        if (isSurvival) return a.rankOrKills - b.rankOrKills;
-                        return b.rankOrKills - a.rankOrKills;
-                      })
+                    {[...(matchResults.results || [])]
+                      .sort((a: any, b: any) => (Number(b.winningAmount) || 0) - (Number(a.winningAmount) || 0))
                       .map((res: any, idx: number) => {
-                        const isWinner =
-                          res.rankOrKills === 1 &&
-                          (matchResults.prizeType === 'survival' || matchResults.section !== 'Battle Royale');
+                        const isWinner = idx === 0 && (Number(res.winningAmount) || 0) > 0;
 
                         return (
                           <div
@@ -397,26 +393,24 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
                                     : 'bg-white/5 text-neutral-400 border-white/10'
                                 }`}
                               >
-                                {matchResults.prizeType === 'perKill' ? 'K' : `#${res.rankOrKills}`}
+                                #{idx + 1}
                               </div>
                               <div>
                                 <h4 className={`text-xs font-bold ${isWinner ? 'text-amber-400' : 'text-white'}`}>
                                   {res.ign || res.username}
                                 </h4>
-                                {matchResults.prizeType === 'perKill' && (
-                                  <p className="text-[8px] font-black uppercase text-neutral-400 tracking-widest">
-                                    {res.rankOrKills} Kills
-                                  </p>
-                                )}
+                                <p className="text-[8px] font-black uppercase text-neutral-400 tracking-widest">
+                                  @{res.username || 'player'}
+                                </p>
                               </div>
                             </div>
                             <div className="text-right">
                               <p
                                 className={`text-sm font-black ${
-                                  res.winningAmount > 0 ? 'text-emerald-400' : 'text-neutral-500'
+                                  (Number(res.winningAmount) || 0) > 0 ? 'text-emerald-400' : 'text-neutral-500'
                                 }`}
                               >
-                                {res.winningAmount > 0 ? `+₹${res.winningAmount}` : '₹0'}
+                                {(Number(res.winningAmount) || 0) > 0 ? `+${res.winningAmount} Coins` : '0 Coins'}
                               </p>
                             </div>
                           </div>
@@ -441,81 +435,71 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
         )}
       </AnimatePresence>
 
-      {/* ID Pass Modal */}
+      {/* Centered View IDP Modal */}
       <AnimatePresence>
         {showIdPass.isOpen && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/90 backdrop-blur-md"
+            className="fixed inset-0 z-50 flex items-center justify-center p-5 bg-black/95 backdrop-blur-md"
             onClick={() => setShowIdPass({ isOpen: false })}
           >
             <motion.div
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
-              className="w-full max-w-sm bg-[#0a1226] border border-[#1e3461] rounded-[2.5rem] p-7 shadow-2xl relative overflow-hidden"
+              initial={{ scale: 0.92, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }}
+              className="w-full max-w-sm bg-[#0a1226] border border-[#1e3461] rounded-[2rem] p-6 shadow-2xl relative text-center"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between mb-6 relative">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-12 h-12 rounded-2xl bg-amber-500/10 flex items-center justify-center text-amber-400 border border-amber-500/20">
-                    <Star size={24} />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-black uppercase tracking-tight text-white line-clamp-1">
-                      Room Credentials
-                    </h3>
-                    <p className="text-[9px] font-bold text-neutral-400 uppercase tracking-widest">
-                      Entry strictly for joined players
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowIdPass({ isOpen: false })}
-                  className="p-2 bg-white/5 text-neutral-400 rounded-xl hover:text-white transition-colors"
-                >
-                  <X size={18} />
-                </button>
-              </div>
+              <button
+                onClick={() => setShowIdPass({ isOpen: false })}
+                className="absolute top-4 right-4 p-2 bg-white/10 text-neutral-300 rounded-xl hover:text-white transition-colors"
+              >
+                <X size={18} />
+              </button>
 
-              <div className="space-y-3.5 mb-6">
-                <div className="p-3.5 bg-[#0f1d3b] rounded-2xl border border-white/5">
-                  <p className="text-[7px] font-black uppercase text-neutral-400 tracking-widest mb-1">Room ID</p>
-                  <div className="flex items-center justify-between">
-                    <p className="text-lg font-black text-white tracking-wider">{showIdPass.roomId || 'PENDING'}</p>
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 flex items-center justify-center text-amber-400 border border-amber-500/30 mx-auto mb-3">
+                <Key size={24} />
+              </div>
+              <h3 className="text-base font-black uppercase tracking-tight text-white mb-4">
+                Match Room IDP
+              </h3>
+
+              <div className="space-y-3.5 mb-5">
+                <div className="p-4 bg-[#0f1d3b] rounded-2xl border border-white/10">
+                  <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest mb-1">Room ID</p>
+                  <p className="text-2xl font-mono font-black text-amber-300 tracking-widest">{showIdPass.roomId || 'PENDING'}</p>
+                  {showIdPass.roomId && (
                     <button
-                      onClick={() => handleCopy(showIdPass.roomId || '')}
-                      className="p-2 bg-white/5 text-neutral-400 rounded-xl hover:text-white transition-colors"
+                      onClick={() => handleCopy(showIdPass.roomId || '', 'id')}
+                      className="mt-2 inline-flex items-center gap-1.5 px-4 py-1.5 bg-white/10 text-white rounded-xl text-[11px] font-black uppercase"
                     >
-                      <Plus size={14} />
+                      {copiedIdpField === 'id' ? <Check size={13} /> : <Copy size={13} />}
+                      <span>{copiedIdpField === 'id' ? 'Copied!' : 'Copy Room ID'}</span>
                     </button>
-                  </div>
+                  )}
                 </div>
-                <div className="p-3.5 bg-[#0f1d3b] rounded-2xl border border-white/5">
-                  <p className="text-[7px] font-black uppercase text-neutral-400 tracking-widest mb-1">Password</p>
-                  <div className="flex items-center justify-between">
-                    <p className="text-lg font-black text-white tracking-wider">{showIdPass.roomPass || 'PENDING'}</p>
+                <div className="p-4 bg-[#0f1d3b] rounded-2xl border border-white/10">
+                  <p className="text-[10px] font-black uppercase text-neutral-400 tracking-widest mb-1">Password</p>
+                  <p className="text-2xl font-mono font-black text-emerald-300 tracking-widest">{showIdPass.roomPass || 'PENDING'}</p>
+                  {showIdPass.roomPass && (
                     <button
-                      onClick={() => handleCopy(showIdPass.roomPass || '')}
-                      className="p-2 bg-white/5 text-neutral-400 rounded-xl hover:text-white transition-colors"
+                      onClick={() => handleCopy(showIdPass.roomPass || '', 'pass')}
+                      className="mt-2 inline-flex items-center gap-1.5 px-4 py-1.5 bg-white/10 text-white rounded-xl text-[11px] font-black uppercase"
                     >
-                      <Plus size={14} />
+                      {copiedIdpField === 'pass' ? <Check size={13} /> : <Copy size={13} />}
+                      <span>{copiedIdpField === 'pass' ? 'Copied!' : 'Copy Password'}</span>
                     </button>
-                  </div>
+                  )}
                 </div>
               </div>
-
-              <p className="text-[8px] text-amber-400/80 uppercase font-bold tracking-wider bg-amber-500/10 p-3 rounded-xl border border-amber-500/20 mb-6 leading-relaxed">
-                Notice: Sharing these credentials with non-joined players will result in an immediate match disqualification.
-              </p>
 
               <button
                 onClick={() => setShowIdPass({ isOpen: false })}
-                className="w-full py-3.5 bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-blue-600/30 active:scale-95"
+                className="w-full py-3.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-blue-600/30 active:scale-95"
               >
-                Close Portal
+                Close
               </button>
             </motion.div>
           </motion.div>

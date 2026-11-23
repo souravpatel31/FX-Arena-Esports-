@@ -4,14 +4,23 @@ import { useParams } from 'react-router-dom';
 import { 
   ArrowLeft, Plus, Loader2, Gamepad2, Map as MapIcon, 
   Users as UsersIcon, Clock, DollarSign, Trophy, Sparkles, Layers, ChevronDown,
-  Image as ImageIcon, Upload, Trash2, CheckCircle2, RefreshCw
+  Image as ImageIcon, Upload, Trash2, CheckCircle2, RefreshCw, AlertCircle
 } from 'lucide-react';
 import { Page, Tournament } from '../types';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { sendEmailVerification } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, serverTimestamp, runTransaction, query, orderBy } from 'firebase/firestore';
 import { GameMode } from './AdminModes';
-import { uploadOriginalImage } from '../utils/imageCompressor';
-import { isAuthorizedAdmin } from '../utils/adminAuth';
+import { uploadOriginalImage, compactImageForFirestore } from '../utils/imageCompressor';
+import { hasControlPanelAccess, isStaffUser } from '../utils/adminAuth';
+
+function getDefaultMatchDateTime(): string {
+  const d = new Date(Date.now() + 60 * 60 * 1000);
+  const mins = Math.ceil(d.getMinutes() / 5) * 5;
+  d.setMinutes(mins, 0, 0);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 interface AdminCreateMatchProps {
   onPageChange: (page: Page) => void;
@@ -64,6 +73,9 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
   const [loadingModes, setLoadingModes] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [verificationFeedback, setVerificationFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [matchForm, setMatchForm] = useState({
@@ -80,7 +92,7 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
     prizePool: 300,
     maxPlayers: 48,
     totalSlots: 48,
-    time: '',
+    time: getDefaultMatchDateTime(),
     prizeType: 'perKill' as 'perKill' | 'survival',
     perKillAmount: 5,
     winnersCount: 1,
@@ -93,12 +105,33 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
     'freefire': ['Bermuda', 'Purgatory', 'Kalahari', 'Alpine', 'NeXTerra', 'Bermuda Remastered']
   };
 
-  // Fetch Dynamic Game Modes from Firestore
+  // Verify panel role & write permission readiness
   useEffect(() => {
-    if (!isAuthorizedAdmin(auth.currentUser)) {
+    const currentUser = auth.currentUser;
+    if (!hasControlPanelAccess(currentUser)) {
       onPageChange(Page.HOME);
       return;
     }
+
+    const checkWriteReadiness = async () => {
+      if (!currentUser) return;
+      if (currentUser.uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1' || currentUser.emailVerified) {
+        setNeedsVerification(false);
+        return;
+      }
+      try {
+        if (isStaffUser(currentUser)) {
+          const staffSnap = await getDoc(doc(db, 'staff', currentUser.uid));
+          setNeedsVerification(!staffSnap.exists());
+        } else {
+          const adminSnap = await getDoc(doc(db, 'admins', currentUser.uid));
+          setNeedsVerification(!adminSnap.exists());
+        }
+      } catch {
+        setNeedsVerification(!currentUser.emailVerified);
+      }
+    };
+    checkWriteReadiness();
     const fetchGameModes = async () => {
       setLoadingModes(true);
       try {
@@ -140,7 +173,7 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
               prizePool: data.prizePool || 0,
               maxPlayers: data.maxPlayers || 48,
               totalSlots: data.totalSlots || 48,
-              time: data.time || '',
+              time: data.time || getDefaultMatchDateTime(),
               map: data.map || 'Bermuda',
               mode: data.mode || 'Solo',
               section: data.section || 'Battle Royale',
@@ -298,9 +331,39 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
 
   const handleCreateMatch = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
+
+    const cleanTitle = matchForm.title.trim();
+    if (!cleanTitle) {
+      setFormError('Please enter a Match Title before publishing.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
 
     if (!matchForm.gameId || !matchForm.map) {
-      alert('Please select game and map');
+      setFormError('Please select both Game and Map.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const cleanTime = (matchForm.time || '').trim();
+    if (!cleanTime) {
+      setFormError('Please choose Schedule Time for the match.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const slotsNum = Number(matchForm.totalSlots);
+    if (!Number.isFinite(slotsNum) || slotsNum < 1) {
+      setFormError('Total Slots must be at least 1.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const entryFeeNum = Number(matchForm.entryFee);
+    if (!Number.isFinite(entryFeeNum) || entryFeeNum < 0) {
+      setFormError('Entry Fee cannot be negative.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
 
@@ -312,6 +375,9 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
           finalImage = await uploadOriginalImage(finalImage);
         } catch (imgErr) {
           console.warn('Image upload warning:', imgErr);
+        }
+        if (finalImage.startsWith('data:')) {
+          finalImage = await compactImageForFirestore(finalImage, 110_000);
         }
       }
 
@@ -327,17 +393,17 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
         const displayId = `#${newMatchNumber.toString().padStart(3, '0')}`;
 
         const baseData = {
-          title: matchForm.title,
+          title: cleanTitle,
           gameId: matchForm.gameId,
           modeId: matchForm.modeId || matchForm.selectedModeDocId || 'br_solo',
           image: finalImage,
-          entryFee: Number(matchForm.entryFee),
-          maxPlayers: Number(matchForm.totalSlots || 0),
-          totalSlots: Number(matchForm.totalSlots || 0),
-          time: matchForm.time,
+          entryFee: entryFeeNum,
+          maxPlayers: slotsNum,
+          totalSlots: slotsNum,
+          time: cleanTime,
           map: matchForm.map,
-          mode: matchForm.mode,
-          section: matchForm.section,
+          mode: (matchForm.mode || 'Solo').trim(),
+          section: (matchForm.section || 'Battle Royale').trim(),
           matchNumber: newMatchNumber,
           displayId,
           playersCount: 0,
@@ -380,9 +446,15 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
 
       alert('Match created successfully!');
       onPageChange(Page.ADMIN);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error creating match:", e);
       handleFirestoreError(e, OperationType.CREATE, 'matches');
+      const rawMsg = String(e?.message || e?.code || 'Failed to publish match');
+      const friendlyMsg = rawMsg.toLowerCase().includes('permission')
+        ? 'Permission denied: Please verify your email using the banner above (or ask Super Admin to sync your Staff role), then click Confirm & Publish Match again.'
+        : rawMsg;
+      setFormError(friendlyMsg);
+      alert(friendlyMsg);
     } finally {
       setIsProcessing(false);
     }
@@ -403,6 +475,7 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
         {/* Header */}
         <div className="flex items-center gap-4 mb-6">
           <button 
+            type="button"
             onClick={() => onPageChange(Page.ADMIN)}
             className="p-2.5 bg-neutral-900 border border-neutral-800 rounded-xl text-neutral-400 hover:text-white transition-colors"
           >
@@ -418,7 +491,71 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
           </div>
         </div>
 
-        <form onSubmit={handleCreateMatch} className="space-y-5">
+        {needsVerification && (
+          <div className="mb-5 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-amber-200 space-y-2.5">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+              <div className="text-xs leading-snug">
+                <p className="font-black uppercase tracking-wider text-amber-300">
+                  Email Verification Needed To Publish Matches
+                </p>
+                <p className="text-neutral-300 mt-0.5">
+                  Verify your email once so Firestore allows creating matches, or ask Super Admin to tap Sync Staff Role.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (auth.currentUser) {
+                      await sendEmailVerification(auth.currentUser);
+                      setVerificationFeedback('Verification link sent to your email! Click it, then tap Refresh Status.');
+                    }
+                  } catch (err: any) {
+                    setVerificationFeedback(err?.message || 'Could not send email.');
+                  }
+                }}
+                className="flex-1 py-2 px-3 bg-amber-500 text-black rounded-xl text-[10px] font-black uppercase tracking-wider"
+              >
+                Send Verification Link
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (auth.currentUser) {
+                    await auth.currentUser.reload();
+                    await auth.currentUser.getIdToken(true);
+                    const staffSnap = await getDoc(doc(db, 'staff', auth.currentUser.uid)).catch(() => null);
+                    if (auth.currentUser.emailVerified || staffSnap?.exists()) {
+                      setNeedsVerification(false);
+                      setVerificationFeedback(null);
+                      setFormError(null);
+                    } else {
+                      setVerificationFeedback('Not verified yet. Open the link in your inbox first.');
+                    }
+                  }
+                }}
+                className="py-2 px-3 bg-white/10 hover:bg-white/20 text-white rounded-xl text-[10px] font-black uppercase tracking-wider"
+              >
+                Refresh Status
+              </button>
+            </div>
+            {verificationFeedback && (
+              <p className="text-[10px] font-bold text-amber-300">{verificationFeedback}</p>
+            )}
+          </div>
+        )}
+
+        {formError && (
+          <div className="mb-5 p-3.5 rounded-2xl bg-red-500/15 border border-red-500/40 text-red-200 flex items-start gap-2.5 text-xs font-bold">
+            <AlertCircle size={16} className="text-red-400 shrink-0 mt-0.5" />
+            <p className="flex-1 leading-snug">{formError}</p>
+          </div>
+        )}
+
+        <form onSubmit={handleCreateMatch} noValidate className="space-y-5">
           {/* Match Title */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-black uppercase tracking-widest text-neutral-400 ml-1">Match Title *</label>
@@ -910,9 +1047,16 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
             )}
           </div>
 
+          {formError && (
+            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/40 text-red-200 flex items-start gap-2.5 text-xs font-bold">
+              <AlertCircle size={16} className="text-red-400 shrink-0 mt-0.5" />
+              <p className="flex-1 leading-snug">{formError}</p>
+            </div>
+          )}
+
           <button 
             type="submit"
-            disabled={isProcessing}
+            disabled={isProcessing || isUploadingImage}
             className="w-full py-4.5 bg-purple-600 hover:bg-purple-700 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl shadow-purple-600/30 mt-6 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2 text-white"
           >
             {isProcessing ? (

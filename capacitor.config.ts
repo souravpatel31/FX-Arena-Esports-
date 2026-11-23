@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.fxarena.esports',
-  appName: 'FX Arena Esports',
+  appName: 'FX Arena eSport',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

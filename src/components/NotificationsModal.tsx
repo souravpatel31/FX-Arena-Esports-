@@ -10,7 +10,11 @@ import { db } from '../lib/firebase';
 import { collection, onSnapshot, query, orderBy, limit, doc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { useModalBackHandler } from '../hooks/useModalBackHandler';
 import SafeImage from './SafeImage';
-import { requestMobileNotificationPermission, triggerMobileStatusBarNotification } from '../utils/mobileNotificationHelper';
+import {
+  getNotificationPermissionStatus,
+  requestMobileNotificationPermission,
+  triggerMobileStatusBarNotification,
+} from '../utils/mobileNotificationHelper';
 
 interface NotificationsModalProps {
   isOpen: boolean;
@@ -30,7 +34,7 @@ export default function NotificationsModal({
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
   const [permissionStatus, setPermissionStatus] = useState<string>(
-    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default'
+    user?.notificationsEnabled ? 'granted' : 'default'
   );
   const [isRequestingPermission, setIsRequestingPermission] = useState(false);
   const [testSent, setTestSent] = useState(false);
@@ -38,10 +42,15 @@ export default function NotificationsModal({
   useModalBackHandler(isOpen, onClose);
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      setPermissionStatus(Notification.permission);
-    }
-  }, [isOpen]);
+    if (!isOpen) return;
+    getNotificationPermissionStatus().then((status) => {
+      if (status === 'granted' || user?.notificationsEnabled) {
+        setPermissionStatus('granted');
+      } else {
+        setPermissionStatus(status);
+      }
+    });
+  }, [isOpen, user?.notificationsEnabled]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -58,16 +67,16 @@ export default function NotificationsModal({
         ...d.data()
       } as AppNotification));
 
-      // Filter based on audience
+      // Strict audience check: match notifications ONLY for joined players of that match
       const filtered = list.filter(item => {
         if (!item.audience || item.audience === 'all') return true;
-        if (item.audience === 'match' && item.targetMatchId) {
-          return joinedMatchIds.includes(item.targetMatchId);
+        if (item.audience === 'match') {
+          return Boolean(item.targetMatchId && joinedMatchIds.includes(item.targetMatchId));
         }
-        if (item.audience === 'user' && item.targetUserId && user?.id) {
-          return item.targetUserId === user.id;
+        if (item.audience === 'user') {
+          return Boolean(item.targetUserId && user?.id && item.targetUserId === user.id);
         }
-        return true;
+        return false;
       });
 
       setNotifications(filtered);
@@ -94,8 +103,8 @@ export default function NotificationsModal({
 
   const handleSendTestNotification = async () => {
     await triggerMobileStatusBarNotification(
-      '🔥 Free Fire Match Alert!',
-      'Room ID: 893412 • Pass: 1234 | Match starts in 10 minutes!',
+      'FX Arena eSport Match Alert',
+      'Live tournament & Room IDP notifications are active for your joined matches!',
       { tag: 'test-mobile-bar-alert' }
     );
     setTestSent(true);
@@ -195,7 +204,7 @@ export default function NotificationsModal({
     {
       id: 'default_3',
       title: 'Refer & Earn ₹3 Bonus Cash',
-      message: 'Invite your Free Fire squad to FX Arena Esports and earn instant cash rewards on every deposit.',
+      message: 'Invite your Free Fire squad to FX Arena eSport and earn instant cash rewards on every deposit.',
       type: 'offer' as const,
       audience: 'all' as const,
       actionPage: Page.REFERRAL,

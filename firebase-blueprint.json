@@ -123,9 +123,24 @@
         "players": { "type": "array" },
         "map": { "type": "string", "maxLength": 100 },
         "perspective": { "type": "string", "maxLength": 50 },
-        "status": { "type": "string", "maxLength": 50 }
+        "status": { "type": "string", "maxLength": 50 },
+        "hasRoomCredentials": { "type": "boolean" },
+        "roomNotes": { "type": "string", "maxLength": 500 }
       },
       "required": ["gameId", "title", "entryFee"]
+    },
+    "MatchCredential": {
+      "title": "Match Credential",
+      "description": "Private Room ID and Password restricted to admins and joined players",
+      "type": "object",
+      "properties": {
+        "matchId": { "type": "string", "maxLength": 128 },
+        "roomId": { "type": "string", "maxLength": 100 },
+        "roomPassword": { "type": "string", "maxLength": 100 },
+        "roomNotes": { "type": "string", "maxLength": 500 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["matchId"]
     },
     "Registration": {
       "title": "Registration",
@@ -243,6 +258,10 @@
       "schema": "AdminRole",
       "description": "Trusted administrator identities"
     },
+    "/staff/{staffId}": {
+      "schema": "AdminRole",
+      "description": "Trusted match-staff identities for Staff Control Panel"
+    },
     "/paymentSettings/{gatewayId}": {
       "schema": "PaymentGateway",
       "description": "Configurations for multiple payment gateways"
@@ -262,6 +281,10 @@
     "/matches/{matchId}": {
       "schema": "Tournament",
       "description": "Active and past matches"
+    },
+    "/matchCredentials/{matchId}": {
+      "schema": "MatchCredential",
+      "description": "Private Room ID and Password accessible only to admins and joined players"
     },
     "/tournaments/{tournamentId}": {
       "schema": "Tournament",

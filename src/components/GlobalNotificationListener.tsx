@@ -4,10 +4,13 @@ import { Bell, X, Key, Trophy, Gift, ShieldCheck, Zap, Wallet, ChevronRight, Che
 import { db } from '../lib/firebase';
 import { collection, onSnapshot, query, orderBy, limit, doc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { Page, AppNotification, User } from '../types';
-import { 
-  registerNotificationServiceWorker, 
-  requestMobileNotificationPermission, 
-  triggerMobileStatusBarNotification 
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
+import {
+  getNotificationPermissionStatus,
+  registerNotificationServiceWorker,
+  requestMobileNotificationPermission,
+  triggerMobileStatusBarNotification,
 } from '../utils/mobileNotificationHelper';
 import { APP_LOGO_URL } from '../utils/assetUrl';
 
@@ -32,25 +35,28 @@ export default function GlobalNotificationListener({
   const initialLoadDone = useRef<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // Initialize Service Worker & check permission on mount
+  // Initialize Service Worker / Native channel & check permission on mount
   useEffect(() => {
     registerNotificationServiceWorker();
 
-    // Check if permission is default and user hasn't dismissed it in this session
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      if (Notification.permission === 'default') {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    getNotificationPermissionStatus().then((status) => {
+      if (status === 'default' && !user?.notificationsEnabled) {
         const dismissed = sessionStorage.getItem('kg_notif_banner_dismissed');
         if (!dismissed) {
-          const timer = setTimeout(() => {
+          timer = setTimeout(() => {
             setShowPermissionBanner(true);
           }, 2500);
-          return () => clearTimeout(timer);
         }
       }
-    }
-  }, []);
+    });
 
-  // Listen for navigation requests coming from Service Worker notification clicks
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [user?.notificationsEnabled]);
+
+  // Listen for navigation requests from Service Worker & Capacitor LocalNotifications
   useEffect(() => {
     const handleServiceWorkerMessage = (event: MessageEvent) => {
       if (event.data && event.data.type === 'NAVIGATE_FROM_NOTIFICATION') {
@@ -64,10 +70,28 @@ export default function GlobalNotificationListener({
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
-      return () => {
-        navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
-      };
     }
+
+    let listenerPromise: Promise<{ remove: () => Promise<void> }> | null = null;
+    if (Capacitor.isNativePlatform()) {
+      listenerPromise = LocalNotifications.addListener('localNotificationActionPerformed', (event) => {
+        const extra = event.notification?.extra || {};
+        if (extra.actionPage) {
+          onPageChange(extra.actionPage as Page, extra.targetMatchId || undefined);
+        } else if (onOpenNotificationsModal) {
+          onOpenNotificationsModal();
+        }
+      });
+    }
+
+    return () => {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+      }
+      if (listenerPromise) {
+        listenerPromise.then((h) => h.remove()).catch(() => {});
+      }
+    };
   }, [onPageChange, onOpenNotificationsModal]);
 
   // Gentle audio chime
@@ -103,18 +127,17 @@ export default function GlobalNotificationListener({
     }
   };
 
-  // Sync browser notification permission status to Firestore user document
+  // Sync notification permission status to Firestore user document
   useEffect(() => {
     if (!user?.id) return;
-
-    if ('Notification' in window && Notification.permission === 'granted') {
-      if (!user.fcmEnabled || !user.notificationsEnabled) {
-        updateDoc(doc(db, 'users', user.id), {
+    getNotificationPermissionStatus().then((status) => {
+      if (status === 'granted' && (!user.fcmEnabled || !user.notificationsEnabled)) {
+        updateDoc(doc(db, 'users', user.id!), {
           fcmEnabled: true,
-          notificationsEnabled: true
+          notificationsEnabled: true,
         }).catch(() => {});
       }
-    }
+    });
   }, [user?.id, user?.fcmEnabled, user?.notificationsEnabled]);
 
   // Listen to Firestore notifications in real-time
@@ -143,12 +166,14 @@ export default function GlobalNotificationListener({
 
           const data = { id: notifId, ...change.doc.data() } as AppNotification;
 
-          // Audience check
-          let isForUser = true;
-          if (data.audience === 'match' && data.targetMatchId) {
-            isForUser = joinedMatchIds.includes(data.targetMatchId);
-          } else if (data.audience === 'user' && data.targetUserId) {
-            isForUser = user?.id === data.targetUserId;
+          // Strict audience check: match alerts go ONLY to players who joined that match
+          let isForUser = false;
+          if (!data.audience || data.audience === 'all') {
+            isForUser = true;
+          } else if (data.audience === 'match') {
+            isForUser = Boolean(data.targetMatchId && joinedMatchIds.includes(data.targetMatchId));
+          } else if (data.audience === 'user') {
+            isForUser = Boolean(data.targetUserId && user?.id === data.targetUserId);
           }
 
           if (isForUser) {

@@ -129,6 +129,23 @@ async function seedInitialData() {
       }, { merge: true });
     }
 
+    // Seed Staff role by UID so Staff Control Panel works seamlessly
+    const staffEmails = ['adminrushxesports@gmail.com'];
+    for (const sEmail of staffEmails) {
+      try {
+        const staffAuthUser = await getAuth(app).getUserByEmail(sEmail);
+        if (staffAuthUser?.uid) {
+          await firestore.collection('staff').doc(staffAuthUser.uid).set({
+            email: sEmail,
+            role: 'staff',
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        }
+      } catch {
+        // Staff user may not have registered yet
+      }
+    }
+
     // Ensure Cashfree structure exists
     const cashfreeDoc = await firestore.collection('paymentSettings').doc('cashfree').get();
     if (!cashfreeDoc.exists) {
@@ -294,6 +311,76 @@ async function startServer() {
     }
   }
 
+  // Clean APK Download Redirect Endpoints (hides upstream GitHub release URL from UI & shares)
+  const handleApkDownload = (_req: express.Request, res: express.Response) => {
+    const targetUrl = (
+      process.env.APK_DOWNLOAD_URL ||
+      process.env.VITE_APK_DOWNLOAD_URL ||
+      "https://github.com/souravpatel31/FX-Arena-Esports-/releases/latest/download/FX-Arena-Esports.apk"
+    ).trim();
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Disposition", 'attachment; filename="FX-Arena-Esports.apk"');
+    return res.redirect(302, targetUrl);
+  };
+  serverApp.get("/api/download-apk", handleApkDownload);
+  serverApp.get("/download/FX-Arena-Esports.apk", handleApkDownload);
+
+  const resolvePublicOrigin = (req: express.Request) => {
+    const rawEnv = (process.env.APP_URL || process.env.VITE_PUBLIC_SITE_URL || "").replace(/\/$/, "").trim();
+    const isBlocked = (u: string) =>
+      !u ||
+      u.toLowerCase().includes("localhost") ||
+      u.toLowerCase().includes("127.0.0.1") ||
+      u.toLowerCase().includes("ais-dev") ||
+      u.toLowerCase().includes("github");
+    if (!isBlocked(rawEnv)) return rawEnv;
+    const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").trim();
+    const proto = String(req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
+    const derived = host ? `${proto}://${host}`.replace(/\/$/, "") : "";
+    if (!isBlocked(derived)) return derived;
+    return "https://khel-galli-ecsu.vercel.app";
+  };
+
+  serverApp.get("/robots.txt", (req, res) => {
+    const origin = resolvePublicOrigin(req);
+    res.type("text/plain").send(
+      [
+        "User-agent: *",
+        "Allow: /",
+        "Allow: /download",
+        "Disallow: /admin",
+        "Disallow: /admin/",
+        "Disallow: /wallet",
+        "Disallow: /profile",
+        "",
+        `Sitemap: ${origin}/sitemap.xml`,
+        "",
+      ].join("\n")
+    );
+  });
+
+  serverApp.get("/sitemap.xml", (req, res) => {
+    const origin = resolvePublicOrigin(req);
+    const today = new Date().toISOString().split("T")[0];
+    res.type("application/xml").send(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${origin}/</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>${origin}/download</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.95</priority>
+  </url>
+</urlset>`
+    );
+  });
+
   // Uncompressed Original-Quality Image Upload Endpoint
   serverApp.post("/api/upload-image", async (req, res) => {
     try {
@@ -435,7 +522,7 @@ async function startServer() {
         customer_details: {
           customer_id: String(userId),
           customer_phone: customerPhone || "9999999999",
-          customer_name: customerName || "FX Arena Esports User",
+          customer_name: customerName || "FX Arena eSport User",
           customer_email: customerEmail || "user@fxarenaesports.com"
         },
         order_meta: {
@@ -482,7 +569,7 @@ async function startServer() {
       }
 
       // Fetch user profile from Firestore for accurate metadata
-      let customerName = "FX Arena Esports User";
+      let customerName = "FX Arena eSport User";
       let customerEmail = "user@fxarenaesports.com";
       let customerPhone = "9999999999";
 

@@ -7,7 +7,7 @@ interface AnnouncementBarProps {
 }
 
 export default function AnnouncementBar({
-  text = 'FX ARENA ESPORTS — MAIN RULES & TELEGRAM CHANNEL',
+  text = 'FX ARENA ESPORT — MAIN RULES & TELEGRAM CHANNEL',
   onClick
 }: AnnouncementBarProps) {
   return (

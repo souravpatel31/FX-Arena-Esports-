@@ -12,6 +12,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-apk:
     name: Build Android APK
@@ -19,15 +22,15 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '21'
@@ -197,17 +200,17 @@ jobs:
           ls -lh FX-Arena-Esports.apk
 
       - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: FX-Arena-Esports-APK
           path: FX-Arena-Esports.apk
 
       - name: Publish Public APK Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v1.0.${{ github.run_number }}
-          name: FX Arena Esports v1.0.${{ github.run_number }}
-          body: Official signed Release Android APK for FX Arena Esports. Uninstall any older version before installing FX-Arena-Esports.apk on your Android phone.
+          name: FX Arena eSport v1.0.${{ github.run_number }}
+          body: Official signed Release Android APK for FX Arena eSport. Uninstall any older version before installing FX-Arena-Esports.apk on your Android phone.
           files: FX-Arena-Esports.apk
           make_latest: true
 
@@ -268,7 +271,7 @@ jobs:
           EOF
 
       - name: Upload GitHub Pages Artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: dist
 
@@ -283,4 +286,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

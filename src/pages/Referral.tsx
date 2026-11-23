@@ -62,7 +62,6 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
       try {
         await Share.share({
           title: sharePayload.title,
-          text: sharePayload.text,
           url: sharePayload.url,
           dialogTitle: sharePayload.title,
         });
@@ -77,7 +76,6 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
       try {
         await navigator.share({
           title: sharePayload.title,
-          text: sharePayload.text,
           url: sharePayload.url,
         });
         return;

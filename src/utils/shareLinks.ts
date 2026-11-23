@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 
-export const APP_SHARE_TITLE = 'FX Arena eSport';
+export const APP_SHARE_TITLE = 'FX Arena';
 
 export const FALLBACK_APK_RELEASE_URL =
   'https://github.com/souravpatel31/FX-Arena-Esports-/releases/latest/download/FX-Arena-Esports.apk';
@@ -14,29 +14,43 @@ export function isBlockedShareUrl(rawUrl?: string | null): boolean {
     url.includes('localhost') ||
     url.includes('127.0.0.1') ||
     url.includes('ais-dev') ||
+    url.includes('ais-pre') ||
+    url.includes('.run.app') ||
+    url.includes('aistudio') ||
+    url.includes('googleusercontent.com') ||
+    url.includes('usercontent.goog') ||
+    url.includes('firebaseapp.com') ||
     url.includes('capacitor://') ||
     url.startsWith('file://') ||
-    url.includes('secret-scanner-g7cvm.web.app') ||
+    url.includes('secret-scanner-g7cvm') ||
     url.includes('github')
   );
 }
 
 export function getCleanPublicOrigin(appSettings?: any): string {
   const configuredBase = (appSettings?.referral?.baseUrl || '').replace(/\/$/, '').trim();
+  const envSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
+  const winOrigin =
+    typeof window !== 'undefined' && !Capacitor.isNativePlatform()
+      ? (window.location.origin || '').replace(/\/$/, '').trim()
+      : '';
+
+  if (winOrigin && !isBlockedShareUrl(winOrigin) && !winOrigin.toLowerCase().includes('khel-galli')) {
+    if (!configuredBase || isBlockedShareUrl(configuredBase) || configuredBase.toLowerCase().includes('khel-galli')) {
+      return winOrigin;
+    }
+  }
+
   if (!isBlockedShareUrl(configuredBase)) {
     return configuredBase;
   }
 
-  const envSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
   if (!isBlockedShareUrl(envSiteUrl)) {
     return envSiteUrl;
   }
 
-  if (typeof window !== 'undefined' && !Capacitor.isNativePlatform()) {
-    const winOrigin = (window.location.origin || '').replace(/\/$/, '').trim();
-    if (!isBlockedShareUrl(winOrigin)) {
-      return winOrigin;
-    }
+  if (winOrigin && !isBlockedShareUrl(winOrigin)) {
+    return winOrigin;
   }
 
   return DEFAULT_PUBLIC_ORIGIN;
@@ -66,9 +80,8 @@ export function buildAppSharePayload(appSettings?: any, referralCode?: string) {
   const url = getCleanShareDownloadUrl(appSettings, referralCode);
   return {
     title: APP_SHARE_TITLE,
-    text: APP_SHARE_TITLE,
     url,
-    copyText: `${APP_SHARE_TITLE}\n${url}`,
+    copyText: url,
   };
 }
 

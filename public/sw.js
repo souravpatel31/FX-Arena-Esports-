@@ -15,8 +15,8 @@ self.addEventListener('message', (event) => {
     
     const options = {
       body: body || 'You have a new update from FX Arena eSport',
-      icon: icon || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
-      badge: badge || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
+      icon: icon || '/fx-arena-logo.png',
+      badge: badge || '/fx-arena-logo.png',
       vibrate: [200, 100, 200, 100, 200],
       tag: tag || 'fx-arena-' + Date.now(),
       renotify: true,
@@ -37,8 +37,8 @@ self.addEventListener('push', (event) => {
   let notifData = {
     title: 'FX Arena eSport Notification',
     body: 'New match update available',
-    icon: '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
-    badge: '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
+    icon: '/fx-arena-logo.png',
+    badge: '/fx-arena-logo.png',
     data: {}
   };
 
@@ -54,8 +54,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(notifData.title, {
       body: notifData.body,
-      icon: notifData.icon || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
-      badge: notifData.badge || '/assets/aistudio/fx_arena_icon_512_8f7073a7.png',
+      icon: notifData.icon || '/fx-arena-logo.png',
+      badge: notifData.badge || '/fx-arena-logo.png',
       vibrate: [200, 100, 200],
       tag: notifData.tag || 'fx-arena-push',
       renotify: true,

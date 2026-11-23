@@ -43,7 +43,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
   const [appSettings, setAppSettings] = useState<any>(null);
   const [shareToast, setShareToast] = useState<string | null>(null);
   const [pushEnabled, setPushEnabled] = useState(() => {
-    return localStorage.getItem('khelgalli_push_notifications') !== 'false';
+    return (localStorage.getItem('fxarena_push_notifications') ?? localStorage.getItem('khelgalli_push_notifications')) !== 'false';
   });
 
   useEffect(() => {
@@ -57,7 +57,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
   const handleTogglePush = () => {
     setPushEnabled((prev) => {
       const next = !prev;
-      localStorage.setItem('khelgalli_push_notifications', String(next));
+      localStorage.setItem('fxarena_push_notifications', String(next));
       return next;
     });
   };
@@ -68,7 +68,6 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
       try {
         await Share.share({
           title: payload.title,
-          text: payload.text,
           url: payload.url,
           dialogTitle: payload.title,
         });
@@ -83,7 +82,6 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
       try {
         await navigator.share({
           title: payload.title,
-          text: payload.text,
           url: payload.url,
         });
         return;

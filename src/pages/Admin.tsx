@@ -16,6 +16,7 @@ import SafeImage from '../components/SafeImage';
 import { uploadOriginalImage } from '../utils/imageCompressor';
 import AdminNotificationsTab from '../components/AdminNotificationsTab';
 import { isAuthorizedAdmin, isStaffUser, hasControlPanelAccess, STAFF_EMAILS } from '../utils/adminAuth';
+import { isBlockedShareUrl } from '../utils/shareLinks';
 
 import { 
   collection, doc, onSnapshot, updateDoc, deleteDoc,
@@ -1031,6 +1032,16 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   };
 
   const handleSaveSettings = async (data: any) => {
+    const rawBaseUrl = String(data?.referral?.baseUrl || '').trim();
+    if (rawBaseUrl && isBlockedShareUrl(rawBaseUrl)) {
+      alert('Please do not use AI Studio, localhost, or GitHub URLs in Base Referral URL. Leave it blank or enter your public website domain (e.g. https://fxarena.in).');
+      return;
+    }
+    const rawApkUrl = String(data?.referral?.apkDownloadUrl || '').trim();
+    if (rawApkUrl && isBlockedShareUrl(rawApkUrl)) {
+      alert('Please do not use AI Studio, localhost, or GitHub URLs in APK Download Link. Leave it blank so the clean download link is used automatically.');
+      return;
+    }
     setIsProcessing(true);
     try {
       await setDoc(doc(db, 'appSettings', 'referral_support'), data, { merge: true });
@@ -2555,10 +2566,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                 
                 <div className="space-y-4">
                   <div className="space-y-2">
-                    <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">Base Referral URL (e.g. https://fxarenaesports.in)</label>
+                    <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">Base Referral URL (e.g. https://fxarena.vercel.app)</label>
                     <input 
                       type="text"
-                      placeholder="https://yourapp.dom"
+                      placeholder="https://fxarena.in"
                       value={appSettings?.referral?.baseUrl || ''}
                       onChange={(e) => setAppSettings({
                         ...appSettings,
@@ -2569,10 +2580,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">APK Download Link (Shared in Mobile App)</label>
+                    <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">APK Download Link (Optional direct HTTPS URL)</label>
                     <input 
                       type="text"
-                      placeholder="https://yourapp.com/FX-Arena-Esports.apk"
+                      placeholder="https://fxarena.in/FX-Arena.apk"
                       value={appSettings?.referral?.apkDownloadUrl || ''}
                       onChange={(e) => setAppSettings({
                         ...appSettings,

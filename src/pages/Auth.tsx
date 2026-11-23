@@ -182,11 +182,11 @@ export default function Auth({ onLogin }: AuthProps) {
           const firebaseUser = userCredential.user;
 
           // Simple device ID tracking
-          let deviceId = localStorage.getItem('khel_galli_device_id');
+          let deviceId = localStorage.getItem('fxarena_device_id') || localStorage.getItem('khel_galli_device_id');
           if (!deviceId) {
             deviceId = Math.random().toString(36).substring(2) + Date.now().toString(36);
-            localStorage.setItem('khel_galli_device_id', deviceId);
           }
+          localStorage.setItem('fxarena_device_id', deviceId);
 
           const referredBy = referralInput.trim().slice(0, 100) || getReferrerFromUrl();
 

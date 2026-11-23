@@ -6,5 +6,5 @@ export function withBase(path: string): string {
   return `${cleanBase}/${cleanPath}`;
 }
 
-export const APP_LOGO_URL = withBase('assets/aistudio/fx_arena_icon_512_8f7073a7.png');
-export const WELCOME_SPLASH_URL = withBase('assets/aistudio/fx-welcome_31ecf10b.png');
+export const APP_LOGO_URL = withBase('fx-arena-logo.png');
+export const WELCOME_SPLASH_URL = withBase('fx-arena-welcome.png');

@@ -95,7 +95,6 @@ export default function DownloadApp({ isLoggedIn = false }: DownloadAppProps) {
       try {
         await Share.share({
           title: sharePayload.title,
-          text: sharePayload.text,
           url: sharePayload.url,
           dialogTitle: sharePayload.title,
         });
@@ -110,7 +109,6 @@ export default function DownloadApp({ isLoggedIn = false }: DownloadAppProps) {
       try {
         await navigator.share({
           title: sharePayload.title,
-          text: sharePayload.text,
           url: sharePayload.url,
         });
         return;
@@ -174,7 +172,7 @@ export default function DownloadApp({ isLoggedIn = false }: DownloadAppProps) {
             <a
               href={downloadHref || '#download'}
               onClick={handleApkDownloadClick}
-              download="FX-Arena-Esports.apk"
+              download="FX-Arena.apk"
               rel="noopener noreferrer"
               className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2.5 shadow-xl shadow-purple-600/30 active:scale-[0.98] transition-all"
             >
@@ -286,7 +284,7 @@ export default function DownloadApp({ isLoggedIn = false }: DownloadAppProps) {
               </span>
               <p className="text-xs text-slate-300 leading-relaxed">
                 Tap <span className="text-white font-bold">Download APK</span> above to save{' '}
-                <span className="text-white font-semibold">FX-Arena-Esports.apk</span> on your phone.
+                <span className="text-white font-semibold">FX-Arena.apk</span> on your phone.
               </p>
             </div>
             <div className="flex items-start gap-3 p-3 rounded-2xl bg-white/[0.03] border border-white/5">

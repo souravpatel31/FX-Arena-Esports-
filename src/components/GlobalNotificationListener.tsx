@@ -183,7 +183,7 @@ export default function GlobalNotificationListener({
 
             // 2. TRIGGER NATIVE MOBILE STATUS BAR NOTIFICATION
             triggerMobileStatusBarNotification(data.title, data.message, {
-              tag: data.id || 'khel-galli-alert',
+              tag: data.id || 'fx-arena-alert',
               targetMatchId: data.targetMatchId,
               actionPage: data.actionPage,
               icon: APP_LOGO_URL,

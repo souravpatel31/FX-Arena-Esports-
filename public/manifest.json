@@ -11,13 +11,13 @@
   "orientation": "portrait",
   "icons": [
     {
-      "src": "/assets/aistudio/fx_arena_icon_512_8f7073a7.png",
+      "src": "/fx-arena-logo.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/assets/aistudio/fx_arena_icon_512_8f7073a7.png",
+      "src": "/fx-arena-logo.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

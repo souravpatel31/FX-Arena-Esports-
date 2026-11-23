@@ -8,6 +8,6 @@ export default async function handler(req: any, res: any) {
 
   const targetUrl = (process.env.APK_DOWNLOAD_URL || process.env.VITE_APK_DOWNLOAD_URL || DEFAULT_APK_TARGET).trim();
   res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Content-Disposition', 'attachment; filename="FX-Arena-Esports.apk"');
+  res.setHeader('Content-Disposition', 'attachment; filename="FX-Arena.apk"');
   return res.redirect(302, targetUrl);
 }

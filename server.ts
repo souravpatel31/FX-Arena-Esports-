@@ -319,10 +319,11 @@ async function startServer() {
       "https://github.com/souravpatel31/FX-Arena-Esports-/releases/latest/download/FX-Arena-Esports.apk"
     ).trim();
     res.setHeader("Cache-Control", "no-store");
-    res.setHeader("Content-Disposition", 'attachment; filename="FX-Arena-Esports.apk"');
+    res.setHeader("Content-Disposition", 'attachment; filename="FX-Arena.apk"');
     return res.redirect(302, targetUrl);
   };
   serverApp.get("/api/download-apk", handleApkDownload);
+  serverApp.get("/download/FX-Arena.apk", handleApkDownload);
   serverApp.get("/download/FX-Arena-Esports.apk", handleApkDownload);
 
   const resolvePublicOrigin = (req: express.Request) => {

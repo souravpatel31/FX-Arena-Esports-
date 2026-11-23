@@ -226,7 +226,7 @@ export default async function handler(req: any, res: any) {
       const response = await axios.post(zapUrl, payload, {
         headers: { 
           'Content-Type': 'application/json',
-          'User-Agent': 'KhelGalli-Vercel/1.6',
+          'User-Agent': 'FXArena-Vercel/2.0',
           'Accept': 'application/json'
         },
         timeout: 15000

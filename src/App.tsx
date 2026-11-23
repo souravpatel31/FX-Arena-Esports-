@@ -11,6 +11,7 @@ import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs
 import { GAMES } from './constants';
 import { isAuthorizedAdmin, hasControlPanelAccess, STAFF_EMAILS } from './utils/adminAuth';
 import { WELCOME_SPLASH_URL } from './utils/assetUrl';
+import { isBlockedShareUrl } from './utils/shareLinks';
 
 // Pages
 import Auth from './pages/Auth';
@@ -218,14 +219,8 @@ export default function App() {
           console.log('Game rules seeded');
         }
 
-        // Seeding app settings (avoid saving localhost/internal/github preview origins)
-        const isInternalOrigin = (u: string) =>
-          !u ||
-          u.includes('localhost') ||
-          u.includes('127.0.0.1') ||
-          u.includes('ais-dev') ||
-          u.includes('secret-scanner-g7cvm.web.app') ||
-          u.toLowerCase().includes('github');
+        // Seeding app settings (never save localhost/internal/AI Studio/github preview origins)
+        const isInternalOrigin = (u: string) => isBlockedShareUrl(u);
         const rawEnvSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
         const envSiteUrl = !isInternalOrigin(rawEnvSiteUrl) ? rawEnvSiteUrl : '';
         const rawEnvApkUrl = (import.meta.env.VITE_APK_DOWNLOAD_URL || '').trim();
@@ -257,10 +252,12 @@ export default function App() {
             const updates: Record<string, any> = {};
             if (existingRef.perReferralReward === 50) updates.perReferralReward = 3;
             if (existingRef.newUserReward === 10) updates.newUserReward = 2;
-            if (isInternalOrigin(existingRef.baseUrl || '') && safeBaseUrl) {
+            if (existingRef.baseUrl && isInternalOrigin(existingRef.baseUrl)) {
               updates.baseUrl = safeBaseUrl;
             }
-            if (!existingRef.apkDownloadUrl && envApkUrl) {
+            if (existingRef.apkDownloadUrl && isInternalOrigin(existingRef.apkDownloadUrl)) {
+              updates.apkDownloadUrl = envApkUrl;
+            } else if (!existingRef.apkDownloadUrl && envApkUrl) {
               updates.apkDownloadUrl = envApkUrl;
             }
             if (Object.keys(updates).length > 0) {

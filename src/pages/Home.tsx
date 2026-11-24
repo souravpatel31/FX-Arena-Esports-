@@ -15,9 +15,25 @@ import RulesModal from '../components/RulesModal';
 import NotificationsModal from '../components/NotificationsModal';
 
 interface HomeProps {
-  user: User;
+  user: User | null;
   onPageChange: (page: Page, id?: string) => void;
   joinedMatchIds: string[];
+}
+
+const MATCHES_CACHE_KEY = 'fxarena_cached_matches';
+const BANNERS_CACHE_KEY = 'fxarena_cached_banners';
+
+function readCachedArray<T>(key: string): T[] {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return [];
 }
 
 export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) {
@@ -39,10 +55,11 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
   
   const [matchResults, setMatchResults] = useState<any>(null);
   const [loadingResults, setLoadingResults] = useState(false);
-  const [matches, setMatches] = useState<Tournament[]>([]);
-  const [loadingMatches, setLoadingMatches] = useState(true);
-  const [banners, setBanners] = useState<Banner[]>([]);
-  const [heroBanners, setHeroBanners] = useState<Banner[]>([]);
+  const [matches, setMatches] = useState<Tournament[]>(() => readCachedArray<Tournament>(MATCHES_CACHE_KEY));
+  const [banners, setBanners] = useState<Banner[]>(() => readCachedArray<Banner>(BANNERS_CACHE_KEY));
+  const [heroBanners, setHeroBanners] = useState<Banner[]>(() =>
+    readCachedArray<Banner>(BANNERS_CACHE_KEY).filter((b) => b.type === 'main' || b.type === 'offer')
+  );
   const [showIdPass, setShowIdPass] = useState<{ isOpen: boolean; roomId?: string; roomPass?: string }>({ isOpen: false });
   const [copiedIdpField, setCopiedIdpField] = useState<'id' | 'pass' | null>(null);
 
@@ -56,30 +73,43 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
   };
 
   useEffect(() => {
-    // Realtime matches subscription
-    const q = query(collection(db, 'matches'), orderBy('matchNumber', 'desc'));
+    // Realtime matches subscription (client-side sort avoids dropping docs missing matchNumber)
     const unsubMatches = onSnapshot(
-      q,
+      collection(db, 'matches'),
       (snapshot) => {
-        setMatches(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Tournament)));
-        setLoadingMatches(false);
+        if (snapshot.empty && snapshot.metadata.fromCache) return;
+        const fetched = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() } as Tournament))
+          .sort((a, b) => (Number(b.matchNumber) || 0) - (Number(a.matchNumber) || 0));
+        setMatches(fetched);
+        try {
+          localStorage.setItem(MATCHES_CACHE_KEY, JSON.stringify(fetched.slice(0, 60)));
+        } catch {
+          // ignore storage limit
+        }
       },
       (err) => {
         console.error('Error fetching matches for home:', err);
         handleFirestoreError(err, OperationType.LIST, 'matches');
-        setLoadingMatches(false);
       }
     );
 
     // Realtime active banners
     const unsubBanners = onSnapshot(
-      query(collection(db, 'banners'), orderBy('order', 'asc')),
+      collection(db, 'banners'),
       (snapshot) => {
+        if (snapshot.empty && snapshot.metadata.fromCache) return;
         const fetchedBanners = snapshot.docs
           .map((doc) => ({ id: doc.id, ...doc.data() } as Banner))
-          .filter((b) => b.isActive !== false);
+          .filter((b) => b.isActive !== false)
+          .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
         setBanners(fetchedBanners);
         setHeroBanners(fetchedBanners.filter((b) => b.type === 'main' || b.type === 'offer'));
+        try {
+          localStorage.setItem(BANNERS_CACHE_KEY, JSON.stringify(fetchedBanners));
+        } catch {
+          // ignore
+        }
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'banners')
     );

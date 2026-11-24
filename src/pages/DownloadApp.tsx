@@ -36,9 +36,19 @@ export default function DownloadApp({ isLoggedIn = false }: DownloadAppProps) {
   const [downloadNote, setDownloadNote] = useState<string | null>(null);
 
   useEffect(() => {
+    if (refCode) {
+      try {
+        localStorage.setItem('fxarena_pending_ref', refCode);
+      } catch {
+        // ignore storage errors
+      }
+    }
+  }, [refCode]);
+
+  useEffect(() => {
     const origin = getCleanPublicOrigin(appSettings);
     const prevTitle = document.title;
-    document.title = 'Download FX Arena eSport APK – Official Android App';
+    document.title = 'FX Arena – Official APK Download';
     const canonicalEl = document.querySelector('link[rel="canonical"]');
     const prevCanonical = canonicalEl?.getAttribute('href') || '';
     if (canonicalEl) {

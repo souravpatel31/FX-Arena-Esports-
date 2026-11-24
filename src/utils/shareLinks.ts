@@ -112,3 +112,27 @@ export function getDownloadButtonHref(appSettings?: any): { href: string; isRead
 
   return { href: directUrl, isReady: Boolean(directUrl) };
 }
+
+export function getBackendApiUrl(apiPath: string): string {
+  const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+  if (typeof window === 'undefined') {
+    return `${DEFAULT_PUBLIC_ORIGIN}${normalizedPath}`;
+  }
+
+  const isNative = Capacitor.isNativePlatform();
+  const host = (window.location.hostname || '').toLowerCase();
+  const proto = (window.location.protocol || '').toLowerCase();
+  const isStaticOrLocalWebView =
+    isNative ||
+    proto === 'file:' ||
+    proto === 'capacitor:' ||
+    host.endsWith('github.io') ||
+    host === 'secret-scanner-g7cvm.web.app';
+
+  if (isStaticOrLocalWebView) {
+    return `${DEFAULT_PUBLIC_ORIGIN}${normalizedPath}`;
+  }
+
+  return normalizedPath;
+}
+

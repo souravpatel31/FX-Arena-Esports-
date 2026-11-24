@@ -16,6 +16,7 @@ import { Page, PaymentGateway } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc, onSnapshot, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { paymentService } from '../services/paymentService';
+import { getBackendApiUrl } from '../utils/shareLinks';
 
 interface AddMoneyProps {
   onPageChange: (page: Page) => void;
@@ -117,7 +118,7 @@ export default function AddMoney({ onPageChange }: AddMoneyProps) {
       const checkStatus = async () => {
         try {
           const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : '';
-          const res = await fetch('/api/zapupi/check-status', {
+          const res = await fetch(getBackendApiUrl('/api/zapupi/check-status'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

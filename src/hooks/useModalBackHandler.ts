@@ -1,45 +1,63 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
 /**
- * Hook to handle closing modals using the browser back button.
- * It pushes a dummy state to history when the modal opens,
- * and calls onClose when the user navigates back.
+ * Safe modal back-button handler.
+ * Never calls history.back() during route transitions or unmount cleanup,
+ * preventing accidental back-navigation or app exit.
  */
 export function useModalBackHandler(isOpen: boolean, onClose: () => void) {
+  const modalId = useId();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const pushedStateRef = useRef(false);
+
+  const pushedRef = useRef(false);
+  const closedByPopstateRef = useRef(false);
+  const openedLocationRef = useRef('');
 
   useEffect(() => {
     if (!isOpen) {
-      // If modal closed programmatically and we previously pushed a state, pop it
-      if (pushedStateRef.current && window.history.state?.isModal) {
-        pushedStateRef.current = false;
+      // Only pop the modal history entry if:
+      // 1. We actually pushed it
+      // 2. It wasn't already popped by user's back button
+      // 3. User is still on the exact same route where modal was opened
+      // 4. Current top history state belongs to THIS modal
+      const currentLoc = window.location.pathname + window.location.search;
+      if (
+        pushedRef.current &&
+        !closedByPopstateRef.current &&
+        currentLoc === openedLocationRef.current &&
+        window.history.state?.modalId === modalId
+      ) {
+        pushedRef.current = false;
         window.history.back();
       }
+      pushedRef.current = false;
+      closedByPopstateRef.current = false;
       return;
     }
 
-    // Modal opened: push history dummy state if not already marked
-    pushedStateRef.current = true;
-    if (!window.history.state?.isModal) {
-      window.history.pushState({ isModal: true }, '');
+    closedByPopstateRef.current = false;
+    openedLocationRef.current = window.location.pathname + window.location.search;
+
+    if (window.history.state?.modalId !== modalId) {
+      window.history.pushState({ ...(window.history.state || {}), isModal: true, modalId }, '');
+      pushedRef.current = true;
     }
 
     const handlePopState = () => {
-      pushedStateRef.current = false;
-      onCloseRef.current();
+      if (pushedRef.current) {
+        pushedRef.current = false;
+        closedByPopstateRef.current = true;
+        onCloseRef.current();
+      }
     };
 
     window.addEventListener('popstate', handlePopState);
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
-      if (pushedStateRef.current && window.history.state?.isModal) {
-        pushedStateRef.current = false;
-        window.history.back();
-      }
+      // Do NOT call window.history.back() inside cleanup so navigating away
+      // or StrictMode re-renders never pop the newly navigated route.
     };
-  }, [isOpen]);
+  }, [isOpen, modalId]);
 }
-

@@ -6,7 +6,7 @@ import { collection, onSnapshot, query, limit } from 'firebase/firestore';
 import { APP_LOGO_URL } from '../utils/assetUrl';
 
 interface HomeHeaderProps {
-  user: User;
+  user: User | null;
   onPageChange: (page: Page, id?: string) => void;
   onOpenNotifications?: () => void;
 }

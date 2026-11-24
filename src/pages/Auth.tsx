@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { Mail, Lock, Phone, User as UserIcon, Ticket, ArrowRight, Gamepad2, Chrome, AlertCircle, CheckCircle2, Download } from 'lucide-react';
@@ -47,11 +47,23 @@ export default function Auth({ onLogin }: AuthProps) {
   const [phone, setPhone] = useState('');
   const [referralInput, setReferralInput] = useState(() => {
     if (typeof window === 'undefined') return '';
-    return new URLSearchParams(window.location.search).get('ref') || '';
+    const urlRef = new URLSearchParams(window.location.search).get('ref');
+    if (urlRef) return urlRef;
+    try {
+      return localStorage.getItem('fxarena_pending_ref') || '';
+    } catch {
+      return '';
+    }
   });
   
   // Error State
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+
+  useEffect(() => {
+    if (auth.currentUser) {
+      onLogin();
+    }
+  }, [onLogin]);
 
   const validatePhone = (p: string) => {
     return p.length === 10 && /^\d+$/.test(p);
@@ -188,7 +200,16 @@ export default function Auth({ onLogin }: AuthProps) {
           }
           localStorage.setItem('fxarena_device_id', deviceId);
 
-          const referredBy = referralInput.trim().slice(0, 100) || getReferrerFromUrl();
+          const referredBy =
+            referralInput.trim().slice(0, 100) ||
+            getReferrerFromUrl() ||
+            (() => {
+              try {
+                return localStorage.getItem('fxarena_pending_ref') || '';
+              } catch {
+                return '';
+              }
+            })();
 
           // Create Firestore Document with graceful failure
           try {
@@ -210,6 +231,11 @@ export default function Auth({ onLogin }: AuthProps) {
             console.warn('Firestore profile creation failed or timed out:', fsError);
           }
 
+          try {
+            localStorage.removeItem('fxarena_pending_ref');
+          } catch {
+            // ignore
+          }
           setSuccessMsg('Registration successful! Redirecting...');
           onLogin();
         } catch (error: any) {

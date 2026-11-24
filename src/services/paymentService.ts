@@ -2,6 +2,7 @@ import { db, auth } from '../lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { PaymentGateway } from '../types';
+import { getBackendApiUrl } from '../utils/shareLinks';
 
 class PaymentService {
   private activeGateway: PaymentGateway | null = null;
@@ -98,7 +99,7 @@ class PaymentService {
       
       // 1. Create order on backend
       const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : '';
-      const res = await fetch('/api/cashfree/create-order', {
+      const res = await fetch(getBackendApiUrl('/api/cashfree/create-order'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -143,7 +144,7 @@ class PaymentService {
         
         // 1. Create order on backend
         const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : '';
-        const res = await fetch('/api/zapupi/create-order', {
+        const res = await fetch(getBackendApiUrl('/api/zapupi/create-order'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

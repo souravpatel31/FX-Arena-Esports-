@@ -342,6 +342,45 @@ async function startServer() {
     return "https://khel-galli-ecsu.vercel.app";
   };
 
+  serverApp.get("/api/share-preview", (req, res) => {
+    const origin = resolvePublicOrigin(req);
+    const rawRef = typeof req.query?.ref === "string" ? req.query.ref.trim() : "";
+    const ref = rawRef.slice(0, 80);
+    const esc = (v: string) =>
+      v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    const shareUrl = `${origin}${ref ? `/download?ref=${encodeURIComponent(ref)}` : "/download"}`;
+    const logoUrl = `${origin}/fx-arena-logo.png?v=3`;
+    const title = "FX Arena – Official APK Download";
+    const description = ref
+      ? `Invited by @${ref} — Download the official FX Arena Android APK. Join daily Free Fire custom room tournaments and win instant rewards.`
+      : "Download the official FX Arena Android APK. Join daily Free Fire custom room tournaments and win instant rewards.";
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.status(200).send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>${esc(title)}</title>
+    <meta name="description" content="${esc(description)}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="FX Arena" />
+    <meta property="og:url" content="${esc(shareUrl)}" />
+    <meta property="og:title" content="${esc(title)}" />
+    <meta property="og:description" content="${esc(description)}" />
+    <meta property="og:image" content="${esc(logoUrl)}" />
+    <meta property="og:image:secure_url" content="${esc(logoUrl)}" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="512" />
+    <meta property="og:image:height" content="512" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${esc(title)}" />
+    <meta name="twitter:description" content="${esc(description)}" />
+    <meta name="twitter:image" content="${esc(logoUrl)}" />
+  </head>
+  <body><h1>${esc(title)}</h1><p>${esc(description)}</p></body>
+</html>`);
+  });
+
   serverApp.get("/robots.txt", (req, res) => {
     const origin = resolvePublicOrigin(req);
     res.type("text/plain").send(

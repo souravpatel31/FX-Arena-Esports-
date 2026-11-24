@@ -1,5 +1,13 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import {
+  getAuth,
+  initializeAuth,
+  indexedDBLocalPersistence,
+  browserLocalPersistence,
+  browserPopupRedirectResolver,
+  setPersistence,
+  type Auth,
+} from 'firebase/auth';
 import { initializeFirestore, setLogLevel, doc, getDocFromServer } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -7,7 +15,7 @@ import firebaseConfig from '../../firebase-applet-config.json';
 // Suppress benign connection warnings in iframe sandboxes
 setLogLevel('error');
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 // Initialize Firestore with force long polling to guarantee instant connection in iframe/proxy environments
 export const db = initializeFirestore(
@@ -19,7 +27,18 @@ export const db = initializeFirestore(
 );
 
 export const storage = getStorage(app);
-export const auth = getAuth();
+
+let authInstance: Auth;
+try {
+  authInstance = initializeAuth(app, {
+    persistence: [indexedDBLocalPersistence, browserLocalPersistence],
+    popupRedirectResolver: browserPopupRedirectResolver,
+  });
+} catch {
+  authInstance = getAuth(app);
+  setPersistence(authInstance, browserLocalPersistence).catch(() => {});
+}
+export const auth = authInstance;
 
 async function testConnection() {
   try {

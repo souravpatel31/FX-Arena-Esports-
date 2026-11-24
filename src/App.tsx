@@ -100,10 +100,133 @@ const pathToPage: Record<string, Page> = {
   '/download': Page.DOWNLOAD
 };
 
+const USER_CACHE_PREFIX = 'fxarena_user_';
+
+function readCachedUser(uid: string): User | null {
+  try {
+    const raw = localStorage.getItem(`${USER_CACHE_PREFIX}${uid}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.id === uid) return parsed as User;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function writeCachedUser(uid: string, userData: User) {
+  try {
+    localStorage.setItem(`${USER_CACHE_PREFIX}${uid}`, JSON.stringify(userData));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function clearCachedUser(uid?: string) {
+  try {
+    if (uid) {
+      localStorage.removeItem(`${USER_CACHE_PREFIX}${uid}`);
+    } else {
+      Object.keys(localStorage).forEach((k) => {
+        if (k.startsWith(USER_CACHE_PREFIX)) localStorage.removeItem(k);
+      });
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function buildBaselineUser(firebaseUser: {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  phoneNumber: string | null;
+}): User {
+  const email = (firebaseUser.email || '').toLowerCase();
+  return {
+    id: firebaseUser.uid,
+    username: firebaseUser.displayName || `Gamer_${firebaseUser.uid.slice(0, 5)}`,
+    email: firebaseUser.email || '',
+    phone: firebaseUser.phoneNumber || '',
+    ...DEFAULT_USER_DATA,
+    isAdmin: Boolean(isAuthorizedAdmin({ email, uid: firebaseUser.uid })),
+  };
+}
+
+interface RouteGuardProps {
+  isLoggedIn: boolean;
+  loading: boolean;
+  user: User | null;
+  children: React.ReactNode;
+}
+
+function ProtectedRoute({ isLoggedIn, loading, user, children }: RouteGuardProps) {
+  const authed = isLoggedIn || Boolean(auth.currentUser);
+  if (!authed && !loading) {
+    return <Navigate to="/login" replace />;
+  }
+  if (!authed && loading) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center">
+        <div className="w-10 h-10 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
+        <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Restoring session...</p>
+      </div>
+    );
+  }
+  if (!user && authed) {
+    return (
+      <div className="flex flex-col items-center justify-center pt-24">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Loading profile...</p>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
+
+function AdminRoute({ isLoggedIn, loading, user, children }: RouteGuardProps) {
+  const authed = isLoggedIn || Boolean(auth.currentUser);
+  if (!authed && !loading) {
+    return <Navigate to="/login" replace />;
+  }
+  if (!user) {
+    return (
+      <div className="flex flex-col items-center justify-center pt-24">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Verifying access...</p>
+      </div>
+    );
+  }
+  if (!isAuthorizedAdmin(user) || !isAuthorizedAdmin(auth.currentUser)) {
+    return <Navigate to="/home" replace />;
+  }
+  return <>{children}</>;
+}
+
+function StaffOrAdminRoute({ isLoggedIn, loading, user, children }: RouteGuardProps) {
+  const authed = isLoggedIn || Boolean(auth.currentUser);
+  if (!authed && !loading) {
+    return <Navigate to="/login" replace />;
+  }
+  if (!user) {
+    return (
+      <div className="flex flex-col items-center justify-center pt-24">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Verifying access...</p>
+      </div>
+    );
+  }
+  if (!hasControlPanelAccess(user) || !hasControlPanelAccess(auth.currentUser)) {
+    return <Navigate to="/home" replace />;
+  }
+  return <>{children}</>;
+}
+
 function ScrollToTop() {
   const { pathname } = useLocation();
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'auto' });
   }, [pathname]);
   return null;
 }
@@ -111,15 +234,39 @@ function ScrollToTop() {
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const isNativeApk = Capacitor.isNativePlatform();
+
+  const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(auth.currentUser));
+  const [user, setUser] = useState<User | null>(() => {
+    if (auth.currentUser) {
+      return readCachedUser(auth.currentUser.uid) || buildBaselineUser(auth.currentUser);
+    }
+    return null;
+  });
+  const [loading, setLoading] = useState(() => !auth.currentUser);
   const [joinedMatchIds, setJoinedMatchIds] = useState<string[]>([]);
-  const [showWelcomeSplash, setShowWelcomeSplash] = useState(true);
+
+  // Never block /download or web auth routes behind a 3s welcome splash
+  const isPublicInstantPath = ['/download', '/login', '/signup'].includes(location.pathname);
+  const [showWelcomeSplash, setShowWelcomeSplash] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const p = window.location.pathname;
+    if (p.startsWith('/download') || p === '/login' || p === '/signup') return false;
+    return isNativeApk;
+  });
   const [splashRunId, setSplashRunId] = useState(1);
   const splashTimerRef = React.useRef<number | null>(null);
 
+  const dismissWelcomeSplash = () => {
+    if (splashTimerRef.current) {
+      window.clearTimeout(splashTimerRef.current);
+      splashTimerRef.current = null;
+    }
+    setShowWelcomeSplash(false);
+  };
+
   const triggerWelcomeSplash = () => {
+    if (location.pathname.startsWith('/download')) return;
     setSplashRunId((prev) => prev + 1);
     setShowWelcomeSplash(true);
     if (splashTimerRef.current) {
@@ -128,20 +275,33 @@ export default function App() {
     splashTimerRef.current = window.setTimeout(() => {
       setShowWelcomeSplash(false);
       splashTimerRef.current = null;
-    }, 3000);
+    }, 1200);
   };
 
-  const isNativeApk = Capacitor.isNativePlatform();
   const pathnameRef = React.useRef(location.pathname);
   pathnameRef.current = location.pathname;
 
+  // Preserve ?ref=... across navigation and initial boot
   useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const refParam = (params.get('ref') || '').trim();
+    if (refParam) {
+      try {
+        localStorage.setItem('fxarena_pending_ref', refParam);
+      } catch {
+        // ignore
+      }
+    }
+  }, [location.search]);
+
+  useEffect(() => {
+    if (!showWelcomeSplash) return;
     const preloadImg = new Image();
     preloadImg.src = WELCOME_SPLASH_URL;
     splashTimerRef.current = window.setTimeout(() => {
       setShowWelcomeSplash(false);
       splashTimerRef.current = null;
-    }, 3000);
+    }, 1200);
     return () => {
       if (splashTimerRef.current) {
         window.clearTimeout(splashTimerRef.current);
@@ -156,7 +316,6 @@ export default function App() {
     const seedDatabase = async (email: string, uid: string) => {
       if (!isAuthorizedAdmin({ email, uid })) return;
       try {
-        // Independence seeding for games
         const gamesSnap = await getDocs(collection(db, 'games'));
         if (gamesSnap.empty) {
           const batch = writeBatch(db);
@@ -164,10 +323,8 @@ export default function App() {
             batch.set(doc(db, 'games', game.id), game);
           });
           await batch.commit();
-          console.log('Games seeded');
         }
 
-        // Seeding game rules
         const rulesSnap = await getDocs(collection(db, 'gameRules'));
         if (rulesSnap.empty) {
           const batch = writeBatch(db);
@@ -216,10 +373,8 @@ export default function App() {
             batch.set(doc(db, 'gameRules', rule.id), rule);
           });
           await batch.commit();
-          console.log('Game rules seeded');
         }
 
-        // Seeding app settings (never save localhost/internal/AI Studio/github preview origins)
         const isInternalOrigin = (u: string) => isBlockedShareUrl(u);
         const rawEnvSiteUrl = (import.meta.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '').trim();
         const envSiteUrl = !isInternalOrigin(rawEnvSiteUrl) ? rawEnvSiteUrl : '';
@@ -245,7 +400,6 @@ export default function App() {
               email: 'support@fxarenaesports.com'
             }
           });
-          console.log('App settings seeded');
         } else {
           const existingRef = settingsSnap.data()?.referral;
           if (existingRef) {
@@ -271,7 +425,6 @@ export default function App() {
           }
         }
 
-        // Seeding initial Game Modes from constants
         const modesSnap = await getDocs(collection(db, 'gameModes'));
         if (modesSnap.empty) {
           const { GAME_MODES_DATA } = await import('./constants');
@@ -287,9 +440,8 @@ export default function App() {
             });
           });
           await batch.commit();
-          console.log('Game modes seeded from constants');
         }
-        // Ensure Staff Control users have trusted /staff/{uid} role doc
+
         for (const staffEmail of STAFF_EMAILS) {
           try {
             const staffUsersSnap = await getDocs(query(collection(db, 'users'), where('email', '==', staffEmail)));
@@ -320,37 +472,44 @@ export default function App() {
       }
 
       if (firebaseUser) {
-        // Seed if admin
+        // Persist authenticated session immediately so ProtectedRoute never bounces back to /login
+        setIsLoggedIn(true);
+        setLoading(false);
+        setUser((prev) => {
+          if (prev && prev.id === firebaseUser.uid) return prev;
+          return readCachedUser(firebaseUser.uid) || buildBaselineUser(firebaseUser);
+        });
+
+        // Redirect logged-in users away from auth/landing root (never redirect off /download)
+        if (['/login', '/signup', '/'].includes(pathnameRef.current)) {
+          navigate('/home', { replace: true });
+        }
+
         seedDatabase(firebaseUser.email || '', firebaseUser.uid);
 
         const userDocRef = doc(db, 'users', firebaseUser.uid);
-        
-        // Listen for user changes (balance, etc.)
+
         unsubscribeUser = onSnapshot(userDocRef, async (userDoc) => {
           if (userDoc.exists()) {
             const data = userDoc.data() as any;
-            
-            // Migration check: if user doesn't have the new wallet structure
-            if (!data.wallet) {
-              console.log("Migrating user wallet structure...");
-              const migratedWallet = {
-                deposit: data.walletBalance || 0,
-                winnings: data.winnings || 0,
-                bonus: data.bonus || 0
-              };
-              
-              // Only migrate if we have some old data, otherwise use defaults
-              if (data.walletBalance === undefined && data.winnings === undefined && data.bonus === undefined) {
-                Object.assign(migratedWallet, DEFAULT_USER_DATA.wallet);
-              }
 
-              const batch = writeBatch(db);
-              batch.update(userDocRef, {
-                wallet: migratedWallet
-              });
-              await batch.commit();
-              // The next snapshot will have the right data
-              return;
+            if (!data.wallet) {
+              try {
+                const migratedWallet = {
+                  deposit: data.walletBalance || 0,
+                  winnings: data.winnings || 0,
+                  bonus: data.bonus || 0
+                };
+                if (data.walletBalance === undefined && data.winnings === undefined && data.bonus === undefined) {
+                  Object.assign(migratedWallet, DEFAULT_USER_DATA.wallet);
+                }
+                const batch = writeBatch(db);
+                batch.update(userDocRef, { wallet: migratedWallet });
+                await batch.commit();
+                return;
+              } catch (migErr) {
+                console.warn('Wallet migration notice:', migErr);
+              }
             }
 
             const normalizedEmail = (firebaseUser.email || '').toLowerCase();
@@ -369,53 +528,62 @@ export default function App() {
               }
             }
 
-            setUser({ id: userDoc.id, ...data, isAdmin: Boolean(shouldBeAdmin) } as User);
+            const resolvedUser = { id: userDoc.id, ...data, isAdmin: Boolean(shouldBeAdmin) } as User;
+            setUser(resolvedUser);
+            writeCachedUser(firebaseUser.uid, resolvedUser);
             setIsLoggedIn(true);
             setLoading(false);
 
-            // Process referral rewards if eligible
             if (data.referredBy && !data.referralClaimed) {
               processReferralReward(data, firebaseUser.uid);
             }
-            
-            // Immediate redirect to home if on login/signup/root pages
-            if (['/login', '/signup', '/'].includes(pathnameRef.current)) {
-              navigate('/home');
-            }
           } else {
-            // For Google Auth or unexpected cases, create default profile
-            const normalizedEmail = (firebaseUser.email || '').toLowerCase();
-            const isAdmin = isAuthorizedAdmin({ email: normalizedEmail, uid: firebaseUser.uid });
-            const newUser: User = {
-              username: (firebaseUser.displayName || `Gamer_${firebaseUser.uid.slice(0, 5)}`).slice(0, 100),
-              email: (firebaseUser.email || '').slice(0, 200),
-              phone: (firebaseUser.phoneNumber || '').slice(0, 30),
-              ...DEFAULT_USER_DATA,
-              isAdmin: Boolean(isAdmin && firebaseUser.emailVerified)
-            };
-            await setDoc(userDocRef, {
-              ...newUser,
-              createdAt: serverTimestamp(),
-            });
-            if (isAdmin) {
-              try {
+            try {
+              const normalizedEmail = (firebaseUser.email || '').toLowerCase();
+              const isAdmin = isAuthorizedAdmin({ email: normalizedEmail, uid: firebaseUser.uid });
+              const pendingRef = (() => {
+                try {
+                  return localStorage.getItem('fxarena_pending_ref') || null;
+                } catch {
+                  return null;
+                }
+              })();
+              const newUser: User = {
+                username: (firebaseUser.displayName || `Gamer_${firebaseUser.uid.slice(0, 5)}`).slice(0, 100),
+                email: (firebaseUser.email || '').slice(0, 200),
+                phone: (firebaseUser.phoneNumber || '').slice(0, 30),
+                ...DEFAULT_USER_DATA,
+                ...(pendingRef ? { referredBy: pendingRef.slice(0, 100), referralClaimed: false } : {}),
+                isAdmin: Boolean(isAdmin && firebaseUser.emailVerified)
+              };
+              await setDoc(userDocRef, {
+                ...newUser,
+                createdAt: serverTimestamp(),
+              });
+              if (pendingRef) {
+                try {
+                  localStorage.removeItem('fxarena_pending_ref');
+                } catch {
+                  // ignore
+                }
+              }
+              if (isAdmin) {
                 await setDoc(doc(db, 'admins', firebaseUser.uid), {
                   email: normalizedEmail,
                   role: 'super_admin',
                   updatedAt: serverTimestamp()
-                }, { merge: true });
-              } catch (adminErr) {
-                console.warn('Could not create admin role doc:', adminErr);
+                }, { merge: true }).catch(() => {});
               }
+            } catch (createErr) {
+              console.warn('Could not create fallback user doc:', createErr);
             }
-            // Snapshot will pick this up
           }
         }, (error) => {
           handleFirestoreError(error, OperationType.GET, `users/${firebaseUser.uid}`);
+          // Keep user logged in with cached/baseline data instead of booting them to /login
           setLoading(false);
         });
 
-        // Listen for player's joined registrations in real-time
         const regQuery = query(collection(db, 'registrations'), where('userId', '==', firebaseUser.uid));
         unsubscribeRegistrations = onSnapshot(
           regQuery,
@@ -432,10 +600,10 @@ export default function App() {
         setUser(null);
         setJoinedMatchIds([]);
         const publicPaths = isNativeApk
-          ? ['/login', '/signup']
+          ? ['/login', '/signup', '/download']
           : ['/', '/download', '/login', '/signup'];
         if (!publicPaths.includes(pathnameRef.current)) {
-          navigate(isNativeApk ? '/login' : '/');
+          navigate(isNativeApk ? '/login' : '/', { replace: true });
         }
         setLoading(false);
       }
@@ -448,20 +616,30 @@ export default function App() {
     };
   }, []);
 
-  const handleLogin = () => {
-    if (!showWelcomeSplash) {
-      triggerWelcomeSplash();
+  const handleLogin = React.useCallback(() => {
+    const currentFbUser = auth.currentUser;
+    if (currentFbUser) {
+      setIsLoggedIn(true);
+      setLoading(false);
+      setUser((prev) => {
+        if (prev && prev.id === currentFbUser.uid) return prev;
+        return readCachedUser(currentFbUser.uid) || buildBaselineUser(currentFbUser);
+      });
     }
-    console.log("Redirecting to home...");
-    navigate('/home');
-  };
+    navigate('/home', { replace: true });
+  }, [navigate]);
 
   const handleLogout = async () => {
+    const uid = auth.currentUser?.uid;
+    clearCachedUser(uid);
+    setIsLoggedIn(false);
+    setUser(null);
+    setJoinedMatchIds([]);
     await auth.signOut();
-    navigate('/login');
+    navigate('/login', { replace: true });
   };
 
-  const handlePageChange = (page: Page, id?: string) => {
+  const handlePageChange = React.useCallback((page: Page, id?: string) => {
     let path = pageToPath[page];
     if (id) {
       if (page === Page.TOURNAMENTS) path = id.startsWith('?') ? `${path}${id}` : `${path}/${id}`;
@@ -473,16 +651,15 @@ export default function App() {
       else if (page === Page.GAME_MODES) path = `${path}/${id}`;
     }
     navigate(path);
-  };
+  }, [navigate]);
 
   const handleJoinSuccess = (matchId: string) => {
-    setJoinedMatchIds(prev => [...prev, matchId]);
+    setJoinedMatchIds(prev => (prev.includes(matchId) ? prev : [...prev, matchId]));
   };
 
   const processReferralReward = async (currentUser: any, uid: string) => {
     if (!currentUser.referredBy || currentUser.referralClaimed) return;
 
-    console.log("Checking referral reward for user:", currentUser.username);
     try {
       const settingsSnap = await getDoc(doc(db, 'appSettings', 'referral_support'));
       if (!settingsSnap.exists()) return;
@@ -490,29 +667,23 @@ export default function App() {
       const refSettings = settings.referral;
       if (!refSettings) return;
 
-      // Find referrer by username
       const q = query(collection(db, 'users'), where('username', '==', currentUser.referredBy));
       const referrerSnap = await getDocs(q);
       if (referrerSnap.empty) {
-        console.log("Referrer not found:", currentUser.referredBy);
-        // Mark as claimed to stop checking
         await updateDoc(doc(db, 'users', uid), { referralClaimed: true });
         return;
       }
 
-      // Device check: Are there other users with this deviceId who already claimed?
       const qDevice = query(collection(db, 'users'), where('deviceId', '==', currentUser.deviceId || 'unknown'));
       const deviceSnap = await getDocs(qDevice);
       if (deviceSnap.docs.some((d) => d.id !== uid && d.data()?.referralClaimed === true)) {
-        console.warn("Fraud alert: Device already used for referral reward");
         await updateDoc(doc(db, 'users', uid), { referralClaimed: true });
         return;
       }
-      
+
       const referrerDoc = referrerSnap.docs[0];
       const referrerId = referrerDoc.id;
 
-      // Reward New User (always allowed by Firestore owner rules up to +10 bonus)
       const rawNewUserReward = refSettings.newUserReward ?? 2;
       const newUserReward = Math.min(10, rawNewUserReward === 10 ? 2 : rawNewUserReward);
       const userBatch = writeBatch(db);
@@ -534,7 +705,6 @@ export default function App() {
       }
       await userBatch.commit();
 
-      // Reward Referrer (if allowed)
       const rawRefReward = refSettings.perReferralReward ?? 3;
       const refReward = rawRefReward === 50 ? 3 : rawRefReward;
       if (refReward > 0 && referrerId !== uid) {
@@ -566,33 +736,33 @@ export default function App() {
           // Cross-user wallet writes require server/admin execution under strict owner rules
         }
       }
-      console.log("Referral rewards processed successfully");
     } catch (err) {
-      console.error("Error processing referral reward:", err);
+      console.error('Error processing referral reward:', err);
     }
   };
 
   const renderWelcomeSplash = () => (
     <AnimatePresence>
-      {showWelcomeSplash && (
+      {showWelcomeSplash && !isPublicInstantPath && (
         <motion.div
           key={`welcome-splash-${splashRunId}`}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.3 }}
-          className="fixed inset-0 z-[200] bg-[#050508] flex items-center justify-center overflow-hidden select-none"
+          transition={{ duration: 0.2 }}
+          onClick={dismissWelcomeSplash}
+          className="fixed inset-0 z-[200] bg-[#050508] flex items-center justify-center overflow-hidden select-none cursor-pointer"
         >
           <div className="relative w-full max-w-lg h-full flex items-center justify-center">
             <img
               src={WELCOME_SPLASH_URL}
-              alt="Welcome to FX Arena eSport"
+              alt="Welcome to FX Arena"
               className="w-full h-full object-contain"
             />
             <motion.div
               initial={{ scaleX: 0 }}
               animate={{ scaleX: 1 }}
-              transition={{ duration: 3, ease: 'linear' }}
+              transition={{ duration: 1.2, ease: 'linear' }}
               style={{ transformOrigin: 'left' }}
               className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-red-600 via-orange-500 to-amber-400"
             />
@@ -602,17 +772,12 @@ export default function App() {
     </AnimatePresence>
   );
 
-  const renderMainContent = () => {
-    if (loading) {
-      return (
-        <div className="min-h-screen bg-background flex flex-col items-center justify-center">
-          <div className="w-12 h-12 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
-          <p className="mt-4 text-xs font-black uppercase tracking-widest text-neutral-500">Initializing...</p>
-        </div>
-      );
-    }
+  // Allow public download/login/signup routes to render instantly without waiting for Auth initializing
+  const shouldShowInitLoader =
+    loading &&
+    !isPublicInstantPath &&
+    !(location.pathname === '/' && !isNativeApk);
 
-  // Derive currentPage for components that still need it
   const currentPath = location.pathname;
   let currentPage = Page.HOME;
   for (const [path, page] of Object.entries(pathToPage)) {
@@ -622,245 +787,195 @@ export default function App() {
     }
   }
 
-  // Protected route wrapper
-  const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-    if (!isLoggedIn && !loading) {
-      return <Navigate to="/login" replace />;
-    }
-    if (!user && isLoggedIn) {
-      return (
-        <div className="flex flex-col items-center justify-center pt-24">
-          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-          <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Loading profile...</p>
-        </div>
-      );
-    }
-    return <>{children}</>;
-  };
-
-  // Strict Admin route wrapper — completely blocks regular users from accessing any Admin UI
-  const AdminRoute = ({ children }: { children: React.ReactNode }) => {
-    if (!isLoggedIn && !loading) {
-      return <Navigate to="/login" replace />;
-    }
-    if (!user && isLoggedIn) {
-      return (
-        <div className="flex flex-col items-center justify-center pt-24">
-          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-          <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Verifying access...</p>
-        </div>
-      );
-    }
-    if (!isAuthorizedAdmin(user) || !isAuthorizedAdmin(auth.currentUser)) {
-      return <Navigate to="/home" replace />;
-    }
-    return <>{children}</>;
-  };
-
-  // Staff + Super Admin route wrapper for Match Create/Edit/Results/IDP & Notifications
-  const StaffOrAdminRoute = ({ children }: { children: React.ReactNode }) => {
-    if (!isLoggedIn && !loading) {
-      return <Navigate to="/login" replace />;
-    }
-    if (!user && isLoggedIn) {
-      return (
-        <div className="flex flex-col items-center justify-center pt-24">
-          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-          <p className="mt-4 text-[10px] font-black uppercase tracking-widest text-neutral-500">Verifying access...</p>
-        </div>
-      );
-    }
-    if (!hasControlPanelAccess(user) || !hasControlPanelAccess(auth.currentUser)) {
-      return <Navigate to="/home" replace />;
-    }
-    return <>{children}</>;
-  };
-
-  // Pages that display header/nav
   const showChrome = isLoggedIn && !['/login', '/signup', '/download'].includes(location.pathname);
   const showHeader = showChrome && !['/home', '/tournaments', '/match/', '/match-details/', '/wallet/add', '/wallet/withdraw', '/admin', '/referral', '/profile/details', '/profile/stats', '/game-modes', '/profile'].some(p => location.pathname.startsWith(p));
   const showNav = showChrome && !['/match/', '/match-details/', '/admin/match/'].some(p => location.pathname.startsWith(p));
 
-  return (
-    <div className="min-h-screen bg-background relative selection:bg-primary/20">
-      <ScrollToTop />
-      <GlobalNotificationListener 
-        user={user} 
-        joinedMatchIds={joinedMatchIds} 
-        onPageChange={handlePageChange} 
-      />
-      {showHeader && <Header user={user!} onPageChange={handlePageChange} />}
-      
-      <main className="mx-auto max-w-lg min-h-screen bg-background overflow-x-hidden">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={location.pathname.split('/')[1] || 'public'} // Transition based on base path
-            initial={{ opacity: 0, x: 10 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -10 }}
-            transition={{ duration: 0.2 }}
-            className="w-full"
-          >
-            <Routes location={location}>
-              <Route
-                path="/"
-                element={
-                  isLoggedIn ? (
-                    <Navigate to="/home" replace />
-                  ) : isNativeApk ? (
-                    <Navigate to="/login" replace />
-                  ) : (
-                    <DownloadApp isLoggedIn={false} />
-                  )
-                }
-              />
-              <Route path="/download" element={<DownloadApp isLoggedIn={isLoggedIn} />} />
-              <Route path="/login" element={<Auth onLogin={handleLogin} />} />
-              <Route path="/signup" element={<Auth onLogin={handleLogin} />} />
-              
-              <Route path="/home" element={
-                <ProtectedRoute>
-                  <Home user={user} onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} />
-                </ProtectedRoute>
-              } />
+  const renderMainContent = () => {
+    if (shouldShowInitLoader) {
+      return (
+        <div className="min-h-screen bg-background flex flex-col items-center justify-center">
+          <div className="w-10 h-10 border-4 border-purple-600 border-t-transparent rounded-full animate-spin" />
+          <p className="mt-4 text-xs font-black uppercase tracking-widest text-neutral-500">Loading FX Arena...</p>
+        </div>
+      );
+    }
 
-              <Route path="/game-modes/:gameId" element={
-                <ProtectedRoute>
-                  <GameModes onPageChange={handlePageChange} />
-                </ProtectedRoute>
-              } />
-              
-              <Route path="/tournaments" element={
-                <ProtectedRoute>
-                  <Tournaments onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} />
-                </ProtectedRoute>
-              } />
-              
-              <Route path="/tournaments/:gameId" element={
-                <ProtectedRoute>
-                  <Tournaments onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/match-details/:id" element={
-                <ProtectedRoute>
-                  <MatchDetails 
-                    user={user!}
-                    onPageChange={handlePageChange} 
-                    joinedMatchIds={joinedMatchIds}
-                  />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/match/:id" element={
-                <ProtectedRoute>
-                  <JoinMatch 
-                    user={user!}
-                    onPageChange={handlePageChange} 
-                    joinedMatchIds={joinedMatchIds}
-                    onJoinSuccess={handleJoinSuccess}
-                  />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/wallet" element={
-                <ProtectedRoute>
-                  <WalletPage user={user} onPageChange={handlePageChange} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/wallet/add" element={
-                <ProtectedRoute>
-                  <AddMoney onPageChange={handlePageChange} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/wallet/withdraw" element={
-                <ProtectedRoute>
-                  <Withdraw user={user} onPageChange={handlePageChange} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/profile" element={
-                <ProtectedRoute>
-                  <ProfilePage user={user} onPageChange={handlePageChange} onLogout={handleLogout} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/profile/details" element={
-                <ProtectedRoute>
-                  <ProfileDetails user={user!} onPageChange={handlePageChange} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/profile/stats" element={
-                <ProtectedRoute>
-                  <GameStats user={user!} onPageChange={handlePageChange} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/referral" element={
-                <ProtectedRoute>
-                  <ReferralPage user={user!} onPageChange={handlePageChange} />
-                </ProtectedRoute>
-              } />
-
-              <Route path="/admin" element={
-                <StaffOrAdminRoute>
-                  <AdminPage onPageChange={handlePageChange} />
-                </StaffOrAdminRoute>
-              } />
-
-              <Route path="/admin/user/:id" element={
-                <AdminRoute>
-                  <AdminUserDetail onPageChange={handlePageChange} />
-                </AdminRoute>
-              } />
-
-              <Route path="/admin/match/edit/:id" element={
-                <StaffOrAdminRoute>
-                  <AdminEditMatch onPageChange={handlePageChange} />
-                </StaffOrAdminRoute>
-              } />
-
-              <Route path="/admin/match/create" element={
-                <StaffOrAdminRoute>
-                  <AdminCreateMatch onPageChange={handlePageChange} />
-                </StaffOrAdminRoute>
-              } />
-
-              <Route path="/admin/match/create/:duplicateId" element={
-                <StaffOrAdminRoute>
-                  <AdminCreateMatch onPageChange={handlePageChange} />
-                </StaffOrAdminRoute>
-              } />
-
-              <Route path="/admin/modes" element={
-                <AdminRoute>
-                  <AdminModes onPageChange={handlePageChange} />
-                </AdminRoute>
-              } />
-
-              <Route path="/leaderboard" element={
-                <ProtectedRoute>
-                  <Leaderboard />
-                </ProtectedRoute>
-              } />
-
-              <Route path="*" element={<Navigate to={isLoggedIn ? "/home" : (isNativeApk ? "/login" : "/")} replace />} />
-            </Routes>
-          </motion.div>
-        </AnimatePresence>
-      </main>
-
-      {showNav && (
-        <BottomNav 
-          currentPage={currentPage} 
-          onPageChange={handlePageChange} 
+    return (
+      <div className="min-h-screen bg-background relative selection:bg-primary/20">
+        <ScrollToTop />
+        <GlobalNotificationListener
           user={user}
+          joinedMatchIds={joinedMatchIds}
+          onPageChange={handlePageChange}
         />
-      )}
-      
+        {showHeader && user && <Header user={user} onPageChange={handlePageChange} />}
+
+        <main className="mx-auto max-w-lg min-h-screen bg-background overflow-x-hidden">
+          <Routes location={location}>
+            <Route
+              path="/"
+              element={
+                isLoggedIn ? (
+                  <Navigate to="/home" replace />
+                ) : isNativeApk ? (
+                  <Navigate to="/login" replace />
+                ) : (
+                  <DownloadApp isLoggedIn={false} />
+                )
+              }
+            />
+            <Route path="/download" element={<DownloadApp isLoggedIn={isLoggedIn} />} />
+            <Route
+              path="/login"
+              element={isLoggedIn ? <Navigate to="/home" replace /> : <Auth onLogin={handleLogin} />}
+            />
+            <Route
+              path="/signup"
+              element={isLoggedIn ? <Navigate to="/home" replace /> : <Auth onLogin={handleLogin} />}
+            />
+
+            <Route path="/home" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <Home user={user} onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/game-modes/:gameId" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <GameModes onPageChange={handlePageChange} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/tournaments" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <Tournaments onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/tournaments/:gameId" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <Tournaments onPageChange={handlePageChange} joinedMatchIds={joinedMatchIds} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/match-details/:id" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <MatchDetails
+                  user={user!}
+                  onPageChange={handlePageChange}
+                  joinedMatchIds={joinedMatchIds}
+                />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/match/:id" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <JoinMatch
+                  user={user!}
+                  onPageChange={handlePageChange}
+                  joinedMatchIds={joinedMatchIds}
+                  onJoinSuccess={handleJoinSuccess}
+                />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/wallet" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <WalletPage user={user} onPageChange={handlePageChange} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/wallet/add" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <AddMoney onPageChange={handlePageChange} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/wallet/withdraw" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <Withdraw user={user} onPageChange={handlePageChange} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/profile" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <ProfilePage user={user!} onPageChange={handlePageChange} onLogout={handleLogout} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/profile/details" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <ProfileDetails user={user!} onPageChange={handlePageChange} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/profile/stats" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <GameStats user={user!} onPageChange={handlePageChange} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/referral" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <ReferralPage user={user!} onPageChange={handlePageChange} />
+              </ProtectedRoute>
+            } />
+
+            <Route path="/admin" element={
+              <StaffOrAdminRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <AdminPage onPageChange={handlePageChange} />
+              </StaffOrAdminRoute>
+            } />
+
+            <Route path="/admin/user/:id" element={
+              <AdminRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <AdminUserDetail onPageChange={handlePageChange} />
+              </AdminRoute>
+            } />
+
+            <Route path="/admin/match/edit/:id" element={
+              <StaffOrAdminRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <AdminEditMatch onPageChange={handlePageChange} />
+              </StaffOrAdminRoute>
+            } />
+
+            <Route path="/admin/match/create" element={
+              <StaffOrAdminRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <AdminCreateMatch onPageChange={handlePageChange} />
+              </StaffOrAdminRoute>
+            } />
+
+            <Route path="/admin/match/create/:duplicateId" element={
+              <StaffOrAdminRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <AdminCreateMatch onPageChange={handlePageChange} />
+              </StaffOrAdminRoute>
+            } />
+
+            <Route path="/admin/modes" element={
+              <AdminRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <AdminModes onPageChange={handlePageChange} />
+              </AdminRoute>
+            } />
+
+            <Route path="/leaderboard" element={
+              <ProtectedRoute isLoggedIn={isLoggedIn} loading={loading} user={user}>
+                <Leaderboard />
+              </ProtectedRoute>
+            } />
+
+            <Route path="*" element={<Navigate to={isLoggedIn ? "/home" : (isNativeApk ? "/login" : "/")} replace />} />
+          </Routes>
+        </main>
+
+        {showNav && (
+          <BottomNav
+            currentPage={currentPage}
+            onPageChange={handlePageChange}
+            user={user}
+          />
+        )}
+
         {/* Global Background Glow */}
         <div className="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-lg h-full pointer-events-none -z-10 overflow-hidden">
           <div className="absolute top-[-10%] left-[-20%] w-[80%] h-[40%] bg-primary/10 blur-[120px] rounded-full" />
@@ -873,7 +988,6 @@ export default function App() {
   return (
     <>
       {renderMainContent()}
-      {/* 3-Second Welcome Splash (Rendered once across loading & active views) */}
       {renderWelcomeSplash()}
     </>
   );

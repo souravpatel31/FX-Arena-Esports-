@@ -2,8 +2,45 @@
   "version": 2,
   "rewrites": [
     {
-      "source": "/((?!api/|robots\\.txt$|sitemap\\.xml$|manifest\\.json$|sw\\.js$|assets/).*)",
-      "destination": "/"
+      "source": "/download",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "(?i).*(whatsapp|facebookexternalhit|facebot|twitterbot|telegrambot|discordbot|slackbot|linkedinbot|applebot|pinterest|vkshare|redditbot).*"
+        }
+      ],
+      "destination": "/api/share-preview"
+    },
+    {
+      "source": "/",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "(?i).*(whatsapp|facebookexternalhit|facebot|twitterbot|telegrambot|discordbot|slackbot|linkedinbot|applebot|pinterest|vkshare|redditbot).*"
+        }
+      ],
+      "destination": "/api/share-preview"
+    },
+    {
+      "source": "/((?!api/|robots\\.txt$|sitemap\\.xml$|manifest\\.json$|sw\\.js$|assets/|.*\\.(?:png|jpg|jpeg|webp|gif|svg|ico|css|js|json|txt|xml|apk)$).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/fx-arena-logo.png",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=86400" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache" }
+      ]
     }
   ],
   "functions": {

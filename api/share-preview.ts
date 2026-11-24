@@ -1,4 +1,4 @@
-const DEFAULT_PUBLIC_ORIGIN = 'https://khel-galli-ecsu.vercel.app';
+const DEFAULT_PUBLIC_ORIGIN = 'https://fx-arena-esports.vercel.app';
 
 function escapeHtml(value: string): string {
   return value

@@ -5,7 +5,7 @@ export const APP_SHARE_TITLE = 'FX Arena';
 export const FALLBACK_APK_RELEASE_URL =
   'https://github.com/souravpatel31/FX-Arena-Esports-/releases/latest/download/FX-Arena-Esports.apk';
 
-export const DEFAULT_PUBLIC_ORIGIN = 'https://khel-galli-ecsu.vercel.app';
+export const DEFAULT_PUBLIC_ORIGIN = 'https://fx-arena-esports.vercel.app';
 
 export function isBlockedShareUrl(rawUrl?: string | null): boolean {
   const url = (rawUrl || '').trim().toLowerCase();

@@ -339,7 +339,7 @@ async function startServer() {
     const proto = String(req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
     const derived = host ? `${proto}://${host}`.replace(/\/$/, "") : "";
     if (!isBlocked(derived)) return derived;
-    return "https://khel-galli-ecsu.vercel.app";
+    return "https://fx-arena-esports.vercel.app";
   };
 
   serverApp.get("/api/share-preview", (req, res) => {

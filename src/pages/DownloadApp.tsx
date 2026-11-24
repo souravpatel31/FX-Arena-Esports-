@@ -48,15 +48,27 @@ export default function DownloadApp({ isLoggedIn = false }: DownloadAppProps) {
   useEffect(() => {
     const origin = getCleanPublicOrigin(appSettings);
     const prevTitle = document.title;
-    document.title = 'FX Arena – Official APK Download';
-    const canonicalEl = document.querySelector('link[rel="canonical"]');
+    const isDownloadPath = typeof window !== 'undefined' && window.location.pathname.startsWith('/download');
+    document.title = isDownloadPath
+      ? 'FX Arena – Official APK Download'
+      : 'FX Arena – Official APK Download & Free Fire Tournaments';
+
+    let canonicalEl = document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null;
+    let created = false;
     const prevCanonical = canonicalEl?.getAttribute('href') || '';
-    if (canonicalEl) {
-      canonicalEl.setAttribute('href', `${origin}/download`);
+    if (!canonicalEl) {
+      canonicalEl = document.createElement('link');
+      canonicalEl.setAttribute('rel', 'canonical');
+      document.head.appendChild(canonicalEl);
+      created = true;
     }
+    canonicalEl.setAttribute('href', isDownloadPath ? `${origin}/download` : `${origin}/`);
+
     return () => {
       document.title = prevTitle;
-      if (canonicalEl && prevCanonical) {
+      if (created && canonicalEl?.parentNode) {
+        canonicalEl.parentNode.removeChild(canonicalEl);
+      } else if (canonicalEl && prevCanonical) {
         canonicalEl.setAttribute('href', prevCanonical);
       }
     };

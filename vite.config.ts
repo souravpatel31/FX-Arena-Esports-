@@ -1,3 +1,4 @@
+import fs from 'fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -9,6 +10,20 @@ export default defineConfig(({mode}) => {
   const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
   const publicSiteUrl = (env.VITE_PUBLIC_SITE_URL || process.env.VITE_PUBLIC_SITE_URL || '').replace(/\/$/, '');
   const apkUrl = (env.VITE_APK_DOWNLOAD_URL || process.env.VITE_APK_DOWNLOAD_URL || '').trim();
+  const appVersion = (env.VITE_APP_VERSION || process.env.VITE_APP_VERSION || '1.0.0').trim();
+  const appBuildNumber = Number(env.VITE_APP_BUILD_NUMBER || process.env.VITE_APP_BUILD_NUMBER || 0) || 0;
+  const appBuildId = (
+    env.VITE_APP_BUILD_ID ||
+    process.env.VITE_APP_BUILD_ID ||
+    process.env.VERCEL_GIT_COMMIT_SHA ||
+    process.env.GITHUB_SHA ||
+    String(Date.now())
+  ).trim();
+  const githubRepo = (
+    env.VITE_GITHUB_REPO ||
+    process.env.VITE_GITHUB_REPO ||
+    'souravpatel31/FX-Arena-Esports-'
+  ).trim();
 
   return {
     base,
@@ -37,9 +52,38 @@ export default defineConfig(({mode}) => {
           return updated;
         },
       },
+      {
+        name: 'fx-arena-version-manifest',
+        writeBundle(options) {
+          const outDir = options.dir || path.resolve(__dirname, 'dist');
+          try {
+            fs.mkdirSync(outDir, {recursive: true});
+            fs.writeFileSync(
+              path.join(outDir, 'version.json'),
+              JSON.stringify(
+                {
+                  version: appVersion,
+                  buildNumber: appBuildNumber,
+                  buildId: appBuildId,
+                  githubRepo,
+                  updatedAt: new Date().toISOString(),
+                },
+                null,
+                2
+              )
+            );
+          } catch {
+            // ignore write errors
+          }
+        },
+      },
     ],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      __APP_VERSION__: JSON.stringify(appVersion),
+      __APP_BUILD_NUMBER__: JSON.stringify(appBuildNumber),
+      __APP_BUILD_ID__: JSON.stringify(appBuildId),
+      __GITHUB_REPO__: JSON.stringify(githubRepo),
     },
     resolve: {
       alias: {

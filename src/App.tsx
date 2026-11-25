@@ -37,6 +37,8 @@ import Leaderboard from './pages/Leaderboard';
 import MatchDetails from './pages/MatchDetails';
 import DownloadApp from './pages/DownloadApp';
 import GlobalNotificationListener from './components/GlobalNotificationListener';
+import AppUpdateModal from './components/AppUpdateModal';
+import { AppUpdateInfo, checkForAppUpdate } from './utils/appUpdater';
 
 const DEFAULT_USER_DATA = {
   wallet: {
@@ -282,6 +284,72 @@ export default function App() {
   const routeHistoryRef = React.useRef<string[]>([location.pathname + location.search]);
   const lastBackPressRef = React.useRef<number>(0);
   const exitToastTimerRef = React.useRef<number | null>(null);
+  const [appUpdateInfo, setAppUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const dismissedUpdateKeyRef = React.useRef<string>('');
+  const lastUpdateCheckAtRef = React.useRef<number>(0);
+
+  const runAutomaticUpdateCheck = React.useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastUpdateCheckAtRef.current < 120_000) return;
+    lastUpdateCheckAtRef.current = now;
+    if (force) setIsCheckingUpdate(true);
+    try {
+      const info = await checkForAppUpdate({ manual: force });
+      if (info.hasUpdate) {
+        const updateKey = `${info.latestVersion}_${info.latestBuildNumber}_${info.source}`;
+        if (force || info.forceUpdate || dismissedUpdateKeyRef.current !== updateKey) {
+          setAppUpdateInfo(info);
+          setIsUpdateModalOpen(true);
+        }
+      } else if (force) {
+        setIsUpdateModalOpen(false);
+      }
+    } catch {
+      // Ignore transient offline errors
+    } finally {
+      if (force) setIsCheckingUpdate(false);
+    }
+  }, []);
+
+  // Auto-check for app updates on startup and whenever APK resumes to foreground
+  useEffect(() => {
+    const bootTimer = window.setTimeout(() => {
+      void runAutomaticUpdateCheck(false);
+    }, 900);
+
+    let stateHandle: { remove: () => Promise<void> } | null = null;
+    let disposed = false;
+
+    if (isNativeApk) {
+      CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) {
+          void runAutomaticUpdateCheck(false);
+        }
+      })
+        .then((handle) => {
+          if (disposed) void handle.remove();
+          else stateHandle = handle;
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(bootTimer);
+      if (stateHandle) void stateHandle.remove();
+    };
+  }, [isNativeApk, runAutomaticUpdateCheck]);
+
+  // Also check admin-forced update settings once user signs in
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const t = window.setTimeout(() => {
+      void runAutomaticUpdateCheck(false);
+    }, 1500);
+    return () => window.clearTimeout(t);
+  }, [isLoggedIn, runAutomaticUpdateCheck]);
 
   // Keep an accurate in-app navigation stack for Android hardware Back ("triangle") button
   useEffect(() => {
@@ -1169,6 +1237,18 @@ export default function App() {
     <>
       {renderMainContent()}
       {renderWelcomeSplash()}
+      <AppUpdateModal
+        isOpen={isUpdateModalOpen}
+        updateInfo={appUpdateInfo}
+        isRechecking={isCheckingUpdate}
+        onRecheck={() => void runAutomaticUpdateCheck(true)}
+        onDismiss={() => {
+          if (appUpdateInfo && !appUpdateInfo.forceUpdate) {
+            dismissedUpdateKeyRef.current = `${appUpdateInfo.latestVersion}_${appUpdateInfo.latestBuildNumber}_${appUpdateInfo.source}`;
+            setIsUpdateModalOpen(false);
+          }
+        }}
+      />
       <AnimatePresence>
         {exitToastVisible && (
           <motion.div

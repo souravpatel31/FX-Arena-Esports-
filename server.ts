@@ -302,6 +302,93 @@ async function startServer() {
   serverApp.get("/download/FX-Arena.apk", handleApkDownload);
   serverApp.get("/download/FX-Arena-Esports.apk", handleApkDownload);
 
+  let cachedVersionPayload: any = null;
+  let cachedVersionAt = 0;
+
+  serverApp.get("/api/app-version", async (req: express.Request, res: express.Response) => {
+    const forceRefresh = req.query?.refresh === "1";
+    if (!forceRefresh && cachedVersionPayload && Date.now() - cachedVersionAt < 60_000) {
+      res.setHeader("Cache-Control", "public, max-age=60, s-maxage=60");
+      return res.status(200).json(cachedVersionPayload);
+    }
+
+    const githubRepo = (
+      process.env.GITHUB_REPO ||
+      process.env.VITE_GITHUB_REPO ||
+      "souravpatel31/FX-Arena-Esports-"
+    ).trim();
+    const fallbackApkUrl = `https://github.com/${githubRepo}/releases/latest/download/FX-Arena-Esports.apk`;
+
+    let distManifest: any = null;
+    try {
+      const manifestPath = path.join(process.cwd(), "dist", "version.json");
+      if (fs.existsSync(manifestPath)) {
+        distManifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      }
+    } catch {
+      // ignore
+    }
+
+    let apkVersion = String(distManifest?.version || process.env.VITE_APP_VERSION || "").trim();
+    let apkBuildNumber = Number(distManifest?.buildNumber || process.env.VITE_APP_BUILD_NUMBER || 0) || 0;
+    let directApkUrl = (process.env.APK_DOWNLOAD_URL || process.env.VITE_APK_DOWNLOAD_URL || fallbackApkUrl).trim();
+    let releaseNotes = "";
+    let publishedAt = "";
+
+    try {
+      const ghRes = await axios.get(`https://api.github.com/repos/${githubRepo}/releases/latest`, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "FX-Arena-Esports-Updater",
+        },
+        timeout: 5000,
+      });
+      const ghData = ghRes.data || {};
+      const tagName = String(ghData.tag_name || "").trim();
+      const matchNum = tagName.match(/(\d+)$/);
+      const parsedBuild = matchNum ? Number(matchNum[1]) || 0 : 0;
+      if (tagName) apkVersion = tagName.replace(/^v/i, "");
+      if (parsedBuild > 0) apkBuildNumber = parsedBuild;
+      const apkAsset = Array.isArray(ghData.assets)
+        ? ghData.assets.find((a: any) => String(a?.name || "").toLowerCase().endsWith(".apk"))
+        : null;
+      if (apkAsset?.browser_download_url && !process.env.APK_DOWNLOAD_URL) {
+        directApkUrl = String(apkAsset.browser_download_url);
+      }
+      const rawBody = String(ghData.body || "").trim();
+      releaseNotes = rawBody.startsWith("Official signed Release Android APK for FX Arena eSport")
+        ? "New game update, performance improvements & latest bug fixes are ready."
+        : rawBody.slice(0, 400);
+      publishedAt = String(ghData.published_at || "");
+    } catch {
+      // Fall back to manifest/env values
+    }
+
+    const origin = resolvePublicOrigin(req);
+    const apkDownloadUrl =
+      process.env.APK_DOWNLOAD_URL && !process.env.APK_DOWNLOAD_URL.includes("github")
+        ? process.env.APK_DOWNLOAD_URL.trim()
+        : `${origin}/api/download-apk${apkBuildNumber > 0 ? `?v=${apkBuildNumber}` : ""}`;
+
+    const payload = {
+      success: true,
+      apkVersion: apkVersion || "1.0.0",
+      apkBuildNumber,
+      apkDownloadUrl,
+      directApkUrl,
+      releaseNotes,
+      publishedAt,
+      webVersion: String(distManifest?.version || apkVersion || "1.0.0"),
+      webBuildId: String(distManifest?.buildId || process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || ""),
+      checkedAt: new Date().toISOString(),
+    };
+
+    cachedVersionPayload = payload;
+    cachedVersionAt = Date.now();
+    res.setHeader("Cache-Control", "public, max-age=60, s-maxage=60");
+    return res.status(200).json(payload);
+  });
+
   const resolvePublicOrigin = (req: express.Request) => {
     const rawEnv = (process.env.APP_URL || process.env.VITE_PUBLIC_SITE_URL || "").replace(/\/$/, "").trim();
     const isBlocked = (u: string) =>

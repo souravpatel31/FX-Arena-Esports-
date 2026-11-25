@@ -15,7 +15,8 @@ import {
   ChevronRight,
   Download,
   Share2,
-  ClipboardCheck
+  ClipboardCheck,
+  RefreshCw
 } from 'lucide-react';
 import { Share } from '@capacitor/share';
 import { Capacitor } from '@capacitor/core';
@@ -25,9 +26,11 @@ import { Page, User } from '../types';
 import SupportModal from '../components/SupportModal';
 import RulesModal from '../components/RulesModal';
 import MyOrdersModal from '../components/MyOrdersModal';
+import AppUpdateModal from '../components/AppUpdateModal';
 import { isAuthorizedAdmin, isStaffUser, isFreeMatchStaffUser } from '../utils/adminAuth';
 import { APP_LOGO_URL } from '../utils/assetUrl';
 import { buildAppSharePayload } from '../utils/shareLinks';
+import { AppUpdateInfo, checkForAppUpdate, getInstalledAppInfo } from '../utils/appUpdater';
 
 interface ProfilePageProps {
   user: User;
@@ -42,17 +45,49 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
   const [appSettings, setAppSettings] = useState<any>(null);
   const [shareToast, setShareToast] = useState<string | null>(null);
+  const [installedVersion, setInstalledVersion] = useState<string>('1.0.0');
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [updateCheckStatus, setUpdateCheckStatus] = useState<string | null>(null);
+  const [manualUpdateInfo, setManualUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
   const [pushEnabled, setPushEnabled] = useState(() => {
     return (localStorage.getItem('fxarena_push_notifications') ?? localStorage.getItem('khelgalli_push_notifications')) !== 'false';
   });
 
   useEffect(() => {
+    getInstalledAppInfo()
+      .then((info) => {
+        if (info?.version) setInstalledVersion(info.version);
+      })
+      .catch(() => {});
+
     getDoc(doc(db, 'appSettings', 'referral_support'))
       .then((snap) => {
         if (snap.exists()) setAppSettings(snap.data());
       })
       .catch(() => {});
   }, []);
+
+  const handleCheckForUpdates = async () => {
+    if (isCheckingUpdate) return;
+    setIsCheckingUpdate(true);
+    setUpdateCheckStatus(null);
+    try {
+      const info = await checkForAppUpdate({ manual: true, appSettings });
+      if (info.hasUpdate) {
+        setManualUpdateInfo(info);
+        setIsUpdateModalOpen(true);
+      } else {
+        setUpdateCheckStatus('Latest version');
+        setTimeout(() => setUpdateCheckStatus(null), 3000);
+      }
+    } catch {
+      setUpdateCheckStatus('Check failed');
+      setTimeout(() => setUpdateCheckStatus(null), 3000);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   const handleTogglePush = () => {
     setPushEnabled((prev) => {
@@ -386,6 +421,35 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
             <ChevronRight size={18} className="text-slate-700 group-hover:translate-x-0.5 transition-transform" />
           </button>
 
+          {/* Card 9a: Check for App Update */}
+          <button
+            type="button"
+            onClick={handleCheckForUpdates}
+            disabled={isCheckingUpdate}
+            className="w-full bg-white hover:bg-slate-50 active:bg-slate-100 rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between border border-slate-200/90 shadow-xs group transition-all disabled:opacity-70"
+          >
+            <div className="flex items-center gap-3.5">
+              <div className="text-indigo-600">
+                <RefreshCw size={20} className={`stroke-[2.2] ${isCheckingUpdate ? 'animate-spin' : ''}`} />
+              </div>
+              <div className="text-left">
+                <span className="text-sm font-bold text-[#0f172a] tracking-tight block leading-tight">
+                  {isCheckingUpdate ? 'Checking for Updates...' : 'Check for App Update'}
+                </span>
+                <span className="text-[10px] font-bold text-slate-400">
+                  Current Version: v{installedVersion}
+                </span>
+              </div>
+            </div>
+            {updateCheckStatus ? (
+              <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">
+                {updateCheckStatus}
+              </span>
+            ) : (
+              <ChevronRight size={18} className="text-slate-700 group-hover:translate-x-0.5 transition-transform" />
+            )}
+          </button>
+
           {/* Card 9b: Download Official APK */}
           <button
             onClick={() => onPageChange(Page.DOWNLOAD)}
@@ -495,11 +559,18 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
 
         {/* Footer info */}
         <p className="mt-8 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-          FX Arena eSport • v3.2.0
+          FX Arena eSport • v{installedVersion}
         </p>
       </div>
 
       {/* Modals */}
+      <AppUpdateModal
+        isOpen={isUpdateModalOpen}
+        updateInfo={manualUpdateInfo}
+        isRechecking={isCheckingUpdate}
+        onRecheck={handleCheckForUpdates}
+        onDismiss={() => setIsUpdateModalOpen(false)}
+      />
       <SupportModal isOpen={isSupportOpen} onClose={() => setIsSupportOpen(false)} />
       <RulesModal
         isOpen={isRulesOpen}

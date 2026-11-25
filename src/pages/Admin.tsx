@@ -36,6 +36,7 @@ import {
   FREE_MATCH_STAFF_EMAILS,
 } from '../utils/adminAuth';
 import { isBlockedShareUrl } from '../utils/shareLinks';
+import { checkForAppUpdate } from '../utils/appUpdater';
 
 import { 
   collection, doc, updateDoc, deleteDoc,
@@ -110,7 +111,7 @@ const ADMIN_TAB_LABELS: Record<AdminTab, string> = {
   [AdminTab.MODE_MATCHES]: 'Modes & IDP',
   [AdminTab.TRANSACTIONS]: 'Transactions',
   [AdminTab.RULES]: 'Rules',
-  [AdminTab.REFERRAL]: 'Referral',
+  [AdminTab.REFERRAL]: 'App & Update',
   [AdminTab.BANNERS]: 'Banners',
   [AdminTab.MODES]: 'Edit Modes',
   [AdminTab.PAYMENT]: 'Payment',
@@ -282,6 +283,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const [appSettings, setAppSettings] = useState<any>(() => initialCache.appSettings || null);
+  const [liveReleasePreview, setLiveReleasePreview] = useState<{ version: string; buildNumber: number } | null>(null);
   const [banners, setBanners] = useState<Banner[]>(() => initialCache.banners || []);
   const [isBannerModalOpen, setIsBannerModalOpen] = useState(false);
   const [editingBanner, setEditingBanner] = useState<Banner | null>(null);
@@ -3334,6 +3336,148 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-8"
             >
+              {/* App Auto-Update Control (GitHub Releases + Force Update) */}
+              <div className="p-6 bg-neutral-900 border border-emerald-500/30 rounded-3xl space-y-5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-black italic uppercase tracking-tight text-white">
+                      App Auto-Update Popup
+                    </h3>
+                    <p className="text-[10px] font-medium text-neutral-400 mt-0.5">
+                      Every GitHub APK build automatically notifies old app users to update — no manual link sharing needed.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const info = await checkForAppUpdate({ manual: true, appSettings });
+                      setLiveReleasePreview({
+                        version: info.latestVersion,
+                        buildNumber: info.latestBuildNumber,
+                      });
+                    }}
+                    className="px-3 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-[9px] font-black uppercase tracking-wider shrink-0"
+                  >
+                    Check Live
+                  </button>
+                </div>
+
+                {liveReleasePreview && (
+                  <div className="p-3 rounded-2xl bg-black/50 border border-emerald-500/20 flex items-center justify-between text-xs">
+                    <span className="text-neutral-400 font-bold">Latest GitHub Release:</span>
+                    <span className="text-emerald-400 font-black">
+                      v{liveReleasePreview.version} (Build #{liveReleasePreview.buildNumber || '—'})
+                    </span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between p-3.5 rounded-2xl bg-black/50 border border-neutral-800">
+                  <div>
+                    <p className="text-xs font-black text-white">Force Mandatory Update</p>
+                    <p className="text-[9px] text-neutral-500 font-medium">
+                      Hide &quot;Later&quot; button so players must update before playing
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAppSettings({
+                        ...appSettings,
+                        appUpdate: {
+                          ...appSettings?.appUpdate,
+                          forceUpdate: !appSettings?.appUpdate?.forceUpdate,
+                        },
+                      })
+                    }
+                    className={`w-12 h-6 rounded-full relative transition-all ${
+                      appSettings?.appUpdate?.forceUpdate ? 'bg-emerald-500' : 'bg-neutral-800'
+                    }`}
+                    aria-label="Toggle Force Update"
+                  >
+                    <div
+                      className={`absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform ${
+                        appSettings?.appUpdate?.forceUpdate ? 'translate-x-6' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">
+                      Min Build # (Optional)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="Auto from GitHub"
+                      value={appSettings?.appUpdate?.minBuildNumber || ''}
+                      onChange={(e) =>
+                        setAppSettings({
+                          ...appSettings,
+                          appUpdate: {
+                            ...appSettings?.appUpdate,
+                            minBuildNumber: Number(e.target.value) || 0,
+                          },
+                        })
+                      }
+                      className="w-full bg-black border border-neutral-800 rounded-xl px-3.5 py-3 text-xs font-bold outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">
+                      Popup Title (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Game Update Available!"
+                      value={appSettings?.appUpdate?.title || ''}
+                      onChange={(e) =>
+                        setAppSettings({
+                          ...appSettings,
+                          appUpdate: {
+                            ...appSettings?.appUpdate,
+                            title: e.target.value,
+                          },
+                        })
+                      }
+                      className="w-full bg-black border border-neutral-800 rounded-xl px-3.5 py-3 text-xs font-bold outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-neutral-500 ml-1">
+                    Update Message / What&apos;s New (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="New modes, fast Room IDP alerts & bug fixes!"
+                    value={appSettings?.appUpdate?.message || ''}
+                    onChange={(e) =>
+                      setAppSettings({
+                        ...appSettings,
+                        appUpdate: {
+                          ...appSettings?.appUpdate,
+                          message: e.target.value,
+                        },
+                      })
+                    }
+                    className="w-full bg-black border border-neutral-800 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleSaveSettings(appSettings)}
+                  disabled={isProcessing}
+                  className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-emerald-600/25 active:scale-95 transition-all flex items-center justify-center gap-2"
+                >
+                  {isProcessing ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                  Save Auto-Update Settings
+                </button>
+              </div>
+
               {/* Referral Settings */}
               <div className="p-6 bg-neutral-900 border border-neutral-800 rounded-3xl space-y-6">
                 <div className="flex items-center justify-between mb-2">

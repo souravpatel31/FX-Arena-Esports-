@@ -6,7 +6,7 @@ import {
   Smartphone, CheckCircle2
 } from 'lucide-react';
 import { Page, AppNotification, User } from '../types';
-import { db } from '../lib/firebase';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, onSnapshot, query, orderBy, limit, doc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { useModalBackHandler } from '../hooks/useModalBackHandler';
 import SafeImage from './SafeImage';
@@ -82,7 +82,7 @@ export default function NotificationsModal({
       setNotifications(filtered);
       setLoading(false);
     }, (err) => {
-      console.error('Error listening to notifications:', err);
+      handleFirestoreError(err, OperationType.LIST, 'notifications');
       setLoading(false);
     });
 
@@ -94,8 +94,8 @@ export default function NotificationsModal({
     try {
       const perm = await requestMobileNotificationPermission(user?.id);
       setPermissionStatus(perm);
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // Permission helper handles fallbacks silently
     } finally {
       setIsRequestingPermission(false);
     }
@@ -119,7 +119,7 @@ export default function NotificationsModal({
         readBy: arrayUnion(user.id)
       });
     } catch (e) {
-      console.error('Could not mark as read:', e);
+      handleFirestoreError(e, OperationType.UPDATE, `notifications/${notifId}`);
     }
   };
 

@@ -7,6 +7,7 @@ import { Page } from '../types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import SafeImage from '../components/SafeImage';
+import { resolveSafeModeImage } from '../utils/assetUrl';
 
 interface GameMode {
   id: string;
@@ -139,7 +140,8 @@ export default function GameModes({ onPageChange }: GameModesProps) {
               >
                 {/* Mode Background Image - object-cover ensures no stretch */}
                 <SafeImage 
-                  src={mode.image || game?.image || 'https://i.ibb.co/v4v8Q5N/freefire.jpg'} 
+                  src={resolveSafeModeImage(mode.image, `${mode.title} ${mode.subtitle || ''} ${mode.id}`)} 
+                  fallbackSrc={resolveSafeModeImage('', `${mode.title} ${mode.subtitle || ''} ${mode.id}`)}
                   alt={mode.title} 
                   className="absolute inset-0 w-full h-full"
                   imgClassName="transition-transform duration-700 group-hover:scale-110"

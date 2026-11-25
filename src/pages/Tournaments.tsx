@@ -4,7 +4,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { ChevronLeft, Loader2, Gamepad, X, Trophy, Key, Copy, Check } from 'lucide-react';
 import { Page, Tournament } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, where, orderBy, doc, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, orderBy, doc, getDoc, getDocs, limit } from 'firebase/firestore';
 import RulesModal from '../components/RulesModal';
 import SafeImage from '../components/SafeImage';
 
@@ -68,15 +68,33 @@ function getDefaultEsportsImage(section?: string, mode?: string) {
   return 'https://images.unsplash.com/photo-1542751371-adc38448a05e?q=80&w=1200&auto=format&fit=crop';
 }
 
+const TOURNAMENT_MATCHES_CACHE_KEY = 'fxarena_cached_matches';
+const TOURNAMENT_MODES_CACHE_KEY = 'fxarena_cached_game_modes';
+
+function readCachedList<T>(key: string): T[] {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return [];
+}
+
 export default function Tournaments({ onPageChange, joinedMatchIds }: TournamentListProps) {
   const { gameId } = useParams();
   const [searchParams] = useSearchParams();
   const selectedGameId = gameId;
   const selectedModeId = searchParams.get('mode');
   const isMyMatches = searchParams.get('my') === '1' || searchParams.get('my') === 'true';
-  const [tournaments, setTournaments] = useState<Tournament[]>([]);
-  const [gameModes, setGameModes] = useState<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [tournaments, setTournaments] = useState<Tournament[]>(() => readCachedList<Tournament>(TOURNAMENT_MATCHES_CACHE_KEY));
+  const [gameModes, setGameModes] = useState<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }[]>(() =>
+    readCachedList<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }>(TOURNAMENT_MODES_CACHE_KEY)
+  );
+  const [loading, setLoading] = useState(() => readCachedList<Tournament>(TOURNAMENT_MATCHES_CACHE_KEY).length === 0);
   const [selectedPrizeMatch, setSelectedPrizeMatch] = useState<Tournament | null>(null);
   const [selectedResultsMatch, setSelectedResultsMatch] = useState<Tournament | null>(null);
   const [selectedRulesMatch, setSelectedRulesMatch] = useState<Tournament | null>(null);
@@ -134,7 +152,7 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
         return;
       }
     } catch (err) {
-      console.warn('Unable to read matchCredentials:', err);
+      handleFirestoreError(err, OperationType.GET, `matchCredentials/${t.id}`);
     }
     setShowIdPass((prev) => ({ ...prev, loading: false }));
   };
@@ -345,7 +363,6 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
       setLoadingResults(true);
       const fetchResults = async () => {
         try {
-          const { getDocs, query, collection, where } = await import('firebase/firestore');
           const resSnap = await getDocs(query(collection(db, 'matchResults'), where('matchId', '==', selectedResultsMatch.id)));
           if (!resSnap.empty) {
             setMatchResults(resSnap.docs[0].data());
@@ -354,7 +371,7 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
             setSelectedResultsMatch(null);
           }
         } catch (error) {
-          console.error("Error fetching results:", error);
+          handleFirestoreError(error, OperationType.GET, 'matchResults');
         } finally {
           setLoadingResults(false);
         }
@@ -367,18 +384,21 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
 
   // Listen to gameModes collection for dynamic mode titles and icons
   useEffect(() => {
-    const qModes = query(collection(db, 'gameModes'), orderBy('order', 'asc'));
+    const qModes = query(collection(db, 'gameModes'), orderBy('order', 'asc'), limit(30));
     const unsubModes = onSnapshot(
       qModes,
       (snapshot) => {
+        if (snapshot.empty && snapshot.metadata.fromCache) return;
         const modesData = snapshot.docs.map((docSnap) => ({
           id: docSnap.id,
           ...docSnap.data()
         })) as { id: string; title: string; category?: string; subtitle?: string; gameId?: string }[];
-        setGameModes(modesData);
+        if (modesData.length > 0) {
+          setGameModes(modesData);
+        }
       },
       (error) => {
-        console.warn('Error fetching game modes for Tournaments page:', error);
+        handleFirestoreError(error, OperationType.LIST, 'gameModes');
       }
     );
 
@@ -387,8 +407,8 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
 
   useEffect(() => {
     const q = selectedGameId
-      ? query(collection(db, 'matches'), where('gameId', '==', selectedGameId))
-      : query(collection(db, 'matches'), orderBy('createdAt', 'desc'));
+      ? query(collection(db, 'matches'), where('gameId', '==', selectedGameId), limit(100))
+      : query(collection(db, 'matches'), orderBy('createdAt', 'desc'), limit(100));
 
     const getTimeMs = (val: any) => {
       if (!val) return 0;
@@ -399,6 +419,10 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
     };
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (snapshot.empty && snapshot.metadata.fromCache) {
+        setLoading(false);
+        return;
+      }
       const data = snapshot.docs
         .map(doc => ({
           id: doc.id,
@@ -417,7 +441,7 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
 
   if (loading) {
     return (
-      <div className="min-h-[60vh] flex flex-col items-center justify-center pt-24 bg-[#081226]">
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#070e20]">
         <Loader2 size={32} className="text-cyan-400 animate-spin mb-4" />
         <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">Loading contests...</p>
       </div>

@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Page, Tournament } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, handleFirestoreError, setFirestoreHealth, OperationType } from '../lib/firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { GAME_MODES_DATA } from '../constants';
 import SafeImage from './SafeImage';
+import { resolveSafeModeImage } from '../utils/assetUrl';
 
 export interface GameMode {
   id: string;
@@ -35,7 +36,10 @@ function getInitialGameModes(): GameMode[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        return parsed.map((m: GameMode) => ({
+          ...m,
+          image: resolveSafeModeImage(m.image, m.title || m.category || m.id),
+        }));
       }
     }
   } catch {
@@ -58,15 +62,17 @@ export default function EsportsGamesGrid({ matches, onPageChange }: EsportsGames
           return;
         }
 
+        setFirestoreHealth('operational');
         const fetchedModes = snapshot.docs
           .map((docSnap) => {
             const d = docSnap.data() as Partial<GameMode>;
+            const title = d.title || 'ARENA';
             return {
               id: d.id || docSnap.id,
               gameId: d.gameId || 'freefire',
-              title: d.title || 'ARENA',
+              title,
               subtitle: d.subtitle || 'Battleground',
-              image: d.image || '',
+              image: resolveSafeModeImage(d.image, `${title} ${d.subtitle || ''} ${docSnap.id}`),
               category: d.category || d.subtitle || 'Arena',
               order: Number(d.order ?? 999),
             } as GameMode;
@@ -86,7 +92,6 @@ export default function EsportsGamesGrid({ matches, onPageChange }: EsportsGames
         }
       },
       (error) => {
-        console.warn('Error listening to game modes on Home:', error);
         handleFirestoreError(error, OperationType.LIST, 'gameModes');
       }
     );
@@ -198,7 +203,8 @@ export default function EsportsGamesGrid({ matches, onPageChange }: EsportsGames
                 {/* Background Character Graphic */}
                 <div className="absolute inset-0 w-full h-full overflow-hidden">
                   <SafeImage
-                    src={mode.image || 'https://images.unsplash.com/photo-1542751371-adc38448a05e?q=80&w=600&auto=format&fit=crop'}
+                    src={resolveSafeModeImage(mode.image, `${mode.title} ${mode.subtitle || ''} ${mode.id}`)}
+                    fallbackSrc={resolveSafeModeImage('', `${mode.title} ${mode.subtitle || ''} ${mode.id}`)}
                     alt={mode.title}
                     className="w-full h-full"
                     imgClassName="group-hover:scale-110 transition-transform duration-500 object-cover"

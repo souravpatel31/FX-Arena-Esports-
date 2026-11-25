@@ -36,7 +36,7 @@ jobs:
           java-version: '21'
 
       - name: Install Dependencies
-        run: npm install --legacy-peer-deps
+        run: npm install --legacy-peer-deps --no-audit --no-fund --loglevel=error
 
       - name: Configure Public Web & APK Release URLs
         run: |
@@ -69,7 +69,7 @@ jobs:
 
       - name: Apply FX Arena Esports Logo & Branding
         run: |
-          python3 -c "import PIL" 2>/dev/null || (sudo apt-get update && sudo apt-get install -y python3-pil)
+          python3 -c "import PIL" 2>/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq python3-pil)
           python3 - << 'EOF'
           import os, glob
           from PIL import Image, ImageDraw
@@ -120,9 +120,11 @@ jobs:
           EOF
 
       - name: Configure Release SDK & Versioning
+        env:
+          RUN_NUM: ${{ github.run_number }}
         run: |
           python3 - << 'EOF'
-          import re
+          import os, re
 
           vars_path = "android/variables.gradle"
           with open(vars_path, "r") as f:
@@ -134,7 +136,7 @@ jobs:
           gradle_path = "android/app/build.gradle"
           with open(gradle_path, "r") as f:
               gradle_txt = f.read()
-          run_num = "${{ github.run_number }}"
+          run_num = os.environ["RUN_NUM"]
           gradle_txt = re.sub(r"versionCode\s+\d+", f"versionCode {run_num}", gradle_txt)
           gradle_txt = re.sub(r'versionName\s+"[^"]+"', f'versionName "1.0.{run_num}"', gradle_txt)
           with open(gradle_path, "w") as f:
@@ -151,7 +153,7 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease --no-daemon --warning-mode=none
           cd ..
 
           UNSIGNED_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"

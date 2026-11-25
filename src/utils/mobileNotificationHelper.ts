@@ -70,8 +70,7 @@ export async function registerNotificationServiceWorker(): Promise<ServiceWorker
       scope: import.meta.env.BASE_URL || '/',
     });
     return registration;
-  } catch (err) {
-    console.warn('Service Worker registration failed:', err);
+  } catch {
     return null;
   }
 }
@@ -133,8 +132,7 @@ export async function requestMobileNotificationPermission(userId?: string): Prom
       }).catch(() => {});
     }
     return 'granted';
-  } catch (err) {
-    console.warn('Notification permission fallback to in-app alerts:', err);
+  } catch {
     localStorage.setItem(INAPP_NOTIF_STORAGE_KEY, 'true');
     if (userId) {
       await updateDoc(doc(db, 'users', userId), {

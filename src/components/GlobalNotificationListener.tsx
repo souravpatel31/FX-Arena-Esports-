@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Bell, X, Key, Trophy, Gift, ShieldCheck, Zap, Wallet, ChevronRight, CheckCircle2, Smartphone } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, handleFirestoreError, getFirestoreHealth, OperationType } from '../lib/firebase';
 import { collection, onSnapshot, query, orderBy, limit, doc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { Page, AppNotification, User } from '../types';
 import { Capacitor } from '@capacitor/core';
@@ -129,7 +129,7 @@ export default function GlobalNotificationListener({
 
   // Sync notification permission status to Firestore user document
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || getFirestoreHealth() !== 'operational') return;
     getNotificationPermissionStatus().then((status) => {
       if (status === 'granted' && (!user.fcmEnabled || !user.notificationsEnabled)) {
         updateDoc(doc(db, 'users', user.id!), {
@@ -198,7 +198,7 @@ export default function GlobalNotificationListener({
         }
       });
     }, (err) => {
-      console.warn('Realtime notifications listener notice:', err);
+      handleFirestoreError(err, OperationType.LIST, 'notifications');
     });
 
     return () => unsub();
@@ -211,8 +211,8 @@ export default function GlobalNotificationListener({
       if (res === 'granted') {
         setShowPermissionBanner(false);
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // Fallback handled cleanly inside helper
     } finally {
       setIsRequestingPermission(false);
     }

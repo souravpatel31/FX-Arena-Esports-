@@ -1,40 +1,78 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Crown, Trophy, Wallet, ChevronRight, Zap, Star } from 'lucide-react';
-import { db } from '../lib/firebase';
-import { collection, query, orderBy, limit, onSnapshot, getDocs, where } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { collection, query, orderBy, limit, getDocs, where } from 'firebase/firestore';
 import { User } from '../types';
 import SafeImage from '../components/SafeImage';
 import { APP_LOGO_URL } from '../utils/assetUrl';
 
 const APP_LOGO = APP_LOGO_URL;
+const LEADERBOARD_CACHE_KEY = 'fxarena_cached_leaderboard_v1';
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 type LeaderboardTab = 'weekly' | 'monthly';
 
 export default function Leaderboard() {
   const [activeTab, setActiveTab] = useState<LeaderboardTab>('weekly');
   const [loading, setLoading] = useState(true);
-  const [allUsers, setAllUsers] = useState<Record<string, User>>({});
-  const [periodTransactions, setPeriodTransactions] = useState<any[]>([]);
+  const [allUsers, setAllUsers] = useState<Record<string, User>>(() => {
+    try {
+      const raw = localStorage.getItem(`${LEADERBOARD_CACHE_KEY}_users`);
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+    return {};
+  });
+  const [periodTransactions, setPeriodTransactions] = useState<any[]>(() => {
+    try {
+      const raw = localStorage.getItem(`${LEADERBOARD_CACHE_KEY}_tx`);
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // ignore
+    }
+    return [];
+  });
 
-  // Real-time listener for all users
+  // Bounded + cached fetch for top players (never reads the entire users collection in real time)
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'users'), (snap) => {
-      const usersMap = snap.docs.reduce((acc, d) => {
-        acc[d.id] = { id: d.id, ...d.data() } as User;
-        return acc;
-      }, {} as Record<string, User>);
-      setAllUsers(usersMap);
-    });
-    return () => unsub();
+    let active = true;
+    const loadTopUsers = async () => {
+      try {
+        const lastFetched = Number(localStorage.getItem(`${LEADERBOARD_CACHE_KEY}_ts`) || '0');
+        if (Object.keys(allUsers).length > 0 && Date.now() - lastFetched < CACHE_TTL_MS) {
+          return;
+        }
+        const snap = await getDocs(query(collection(db, 'users'), orderBy('stats.totalWinnings', 'desc'), limit(80)));
+        if (!active) return;
+        const usersMap = snap.docs.reduce((acc, d) => {
+          acc[d.id] = { id: d.id, ...d.data() } as User;
+          return acc;
+        }, {} as Record<string, User>);
+        setAllUsers(usersMap);
+        try {
+          localStorage.setItem(`${LEADERBOARD_CACHE_KEY}_users`, JSON.stringify(usersMap));
+          localStorage.setItem(`${LEADERBOARD_CACHE_KEY}_ts`, String(Date.now()));
+        } catch {
+          // ignore
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.LIST, 'users');
+      }
+    };
+    loadTopUsers();
+    return () => {
+      active = false;
+    };
   }, []);
 
-  // Real-time listener for period winnings
+  // Bounded fetch for recent win transactions
   useEffect(() => {
-    setLoading(true);
+    let active = true;
     const now = new Date();
     let startDate: Date;
-    
+
     if (activeTab === 'weekly') {
       const day = now.getDay();
       const diff = now.getDate() - day + (day === 0 ? -6 : 1);
@@ -45,33 +83,42 @@ export default function Leaderboard() {
       startDate.setHours(0, 0, 0, 0);
     }
 
-    const q = query(
-      collection(db, 'transactions'),
-      where('type', '==', 'win')
-    );
+    const loadWinTx = async () => {
+      if (periodTransactions.length === 0) setLoading(true);
+      try {
+        const q = query(collection(db, 'transactions'), where('type', '==', 'win'), limit(120));
+        const snap = await getDocs(q);
+        if (!active) return;
+        const startMs = startDate.getTime();
+        const filtered = snap.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .filter((tx: any) => {
+            const val = tx.createdAt;
+            if (!val) return false;
+            const ms = typeof val?.toMillis === 'function'
+              ? val.toMillis()
+              : typeof val?.seconds === 'number'
+                ? val.seconds * 1000
+                : new Date(val).getTime();
+            return !isNaN(ms) && ms >= startMs;
+          });
+        setPeriodTransactions(filtered);
+        try {
+          localStorage.setItem(`${LEADERBOARD_CACHE_KEY}_tx`, JSON.stringify(filtered));
+        } catch {
+          // ignore
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'transactions');
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
 
-    const unsub = onSnapshot(q, (snap) => {
-      const startMs = startDate.getTime();
-      const filtered = snap.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter((tx: any) => {
-          const val = tx.createdAt;
-          if (!val) return false;
-          const ms = typeof val?.toMillis === 'function'
-            ? val.toMillis()
-            : typeof val?.seconds === 'number'
-              ? val.seconds * 1000
-              : new Date(val).getTime();
-          return !isNaN(ms) && ms >= startMs;
-        });
-      setPeriodTransactions(filtered);
-      setLoading(false);
-    }, (error) => {
-      console.error("Leaderboard trans error:", error);
-      setLoading(false);
-    });
-
-    return () => unsub();
+    loadWinTx();
+    return () => {
+      active = false;
+    };
   }, [activeTab]);
 
   // Merge and calculate leaderboard

@@ -94,7 +94,7 @@ export default function HeroBannerCarousel({ banners, onPageChange }: HeroBanner
         >
           {/* Custom Render for Default WP Channel Promo Banner */}
           {currentBanner.id === 'wp-channel-banner' ? (
-            <div className="w-full h-full bg-gradient-to-r from-[#d9e2ec] via-[#eaeff5] to-[#c7d2fe] relative overflow-hidden flex items-center justify-between px-3 sm:px-5 py-2">
+            <div className="w-full h-full bg-gradient-to-r from-[#e2e8f0] via-[#f1f5f9] to-[#e2e8f0] relative overflow-hidden flex items-center justify-between px-3 sm:px-5 py-2">
               {/* Background Tech Geometry */}
               <div className="absolute inset-0 bg-[radial-gradient(#94a3b8_1px,transparent_1px)] [background-size:16px_16px] opacity-25" />
 

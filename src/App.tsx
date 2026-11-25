@@ -1,16 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Routes, Route, useNavigate, useLocation, Navigate, useParams } from 'react-router-dom';
+import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import { Page, User } from './types';
 import Header from './components/Header';
 import BottomNav from './components/BottomNav';
-import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
+import { auth, db, handleFirestoreError, setFirestoreHealth, getFirestoreHealth, OperationType } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs, writeBatch, onSnapshot, increment, updateDoc } from 'firebase/firestore';
-import { GAMES } from './constants';
+import { GAMES, GAME_MODES_DATA } from './constants';
 import { isAuthorizedAdmin, hasControlPanelAccess, STAFF_EMAILS } from './utils/adminAuth';
-import { WELCOME_SPLASH_URL } from './utils/assetUrl';
+import { WELCOME_SPLASH_URL, resolveSafeModeImage } from './utils/assetUrl';
 import { isBlockedShareUrl } from './utils/shareLinks';
 
 // Pages
@@ -22,15 +22,15 @@ import WalletPage from './pages/Wallet';
 import AddMoney from './pages/AddMoney';
 import Withdraw from './pages/Withdraw';
 import ProfilePage from './pages/Profile';
-import AdminPage from './pages/Admin';
-import AdminUserDetail from './pages/AdminUserDetail';
-import AdminEditMatch from './pages/AdminEditMatch';
-import AdminCreateMatch from './pages/AdminCreateMatch';
+const AdminPage = lazy(() => import('./pages/Admin'));
+const AdminUserDetail = lazy(() => import('./pages/AdminUserDetail'));
+const AdminEditMatch = lazy(() => import('./pages/AdminEditMatch'));
+const AdminCreateMatch = lazy(() => import('./pages/AdminCreateMatch'));
 import ReferralPage from './pages/Referral';
 import ProfileDetails from './pages/ProfileDetails';
 import GameStats from './pages/GameStats';
 import GameModes from './pages/GameModes';
-import AdminModes from './pages/AdminModes';
+const AdminModes = lazy(() => import('./pages/AdminModes'));
 import Leaderboard from './pages/Leaderboard';
 import MatchDetails from './pages/MatchDetails';
 import DownloadApp from './pages/DownloadApp';
@@ -265,19 +265,6 @@ export default function App() {
     setShowWelcomeSplash(false);
   };
 
-  const triggerWelcomeSplash = () => {
-    if (location.pathname.startsWith('/download')) return;
-    setSplashRunId((prev) => prev + 1);
-    setShowWelcomeSplash(true);
-    if (splashTimerRef.current) {
-      window.clearTimeout(splashTimerRef.current);
-    }
-    splashTimerRef.current = window.setTimeout(() => {
-      setShowWelcomeSplash(false);
-      splashTimerRef.current = null;
-    }, 1200);
-  };
-
   const pathnameRef = React.useRef(location.pathname);
   pathnameRef.current = location.pathname;
 
@@ -315,6 +302,13 @@ export default function App() {
 
     const seedDatabase = async (email: string, uid: string) => {
       if (!isAuthorizedAdmin({ email, uid })) return;
+      if (getFirestoreHealth() !== 'operational') return;
+      const SEED_FLAG = 'fxarena_db_seeded_v2';
+      try {
+        if (localStorage.getItem(SEED_FLAG) === '1') return;
+      } catch {
+        // ignore storage restrictions
+      }
       try {
         const gamesSnap = await getDocs(collection(db, 'games'));
         if (gamesSnap.empty) {
@@ -323,6 +317,22 @@ export default function App() {
             batch.set(doc(db, 'games', game.id), game);
           });
           await batch.commit();
+        } else {
+          const repairGamesBatch = writeBatch(db);
+          let hasDeadGameImg = false;
+          gamesSnap.docs.forEach((docSnap) => {
+            const d = docSnap.data();
+            const img = String(d?.image || '').toLowerCase();
+            if (img.includes('i.ibb.co/v4v8q5n')) {
+              hasDeadGameImg = true;
+              repairGamesBatch.update(docSnap.ref, {
+                image: resolveSafeModeImage(d.image, d.title || docSnap.id),
+              });
+            }
+          });
+          if (hasDeadGameImg) {
+            await repairGamesBatch.commit();
+          }
         }
 
         const rulesSnap = await getDocs(collection(db, 'gameRules'));
@@ -427,7 +437,6 @@ export default function App() {
 
         const modesSnap = await getDocs(collection(db, 'gameModes'));
         if (modesSnap.empty) {
-          const { GAME_MODES_DATA } = await import('./constants');
           const batch = writeBatch(db);
           Object.entries(GAME_MODES_DATA).forEach(([gameId, modes]) => {
             modes.forEach((mode, index) => {
@@ -440,6 +449,22 @@ export default function App() {
             });
           });
           await batch.commit();
+        } else {
+          const repairModesBatch = writeBatch(db);
+          let hasDeadModeImg = false;
+          modesSnap.docs.forEach((docSnap) => {
+            const d = docSnap.data();
+            const img = String(d?.image || '').toLowerCase();
+            if (img.includes('i.ibb.co/v4v8q5n')) {
+              hasDeadModeImg = true;
+              repairModesBatch.update(docSnap.ref, {
+                image: resolveSafeModeImage(d.image, d.title || d.gameId || docSnap.id),
+              });
+            }
+          });
+          if (hasDeadModeImg) {
+            await repairModesBatch.commit();
+          }
         }
 
         for (const staffEmail of STAFF_EMAILS) {
@@ -452,12 +477,18 @@ export default function App() {
                 updatedAt: serverTimestamp()
               }, { merge: true });
             }
-          } catch (staffErr) {
-            console.warn('Could not sync staff role doc:', staffErr);
+          } catch {
+            // Staff user doc sync skipped when offline/quota-limited
           }
         }
+
+        try {
+          localStorage.setItem(SEED_FLAG, '1');
+        } catch {
+          // ignore
+        }
       } catch (error) {
-        console.error('Error seeding database:', error);
+        handleFirestoreError(error, OperationType.WRITE, 'seedDatabase');
       }
     };
 
@@ -490,6 +521,9 @@ export default function App() {
         const userDocRef = doc(db, 'users', firebaseUser.uid);
 
         unsubscribeUser = onSnapshot(userDocRef, async (userDoc) => {
+          if (!userDoc.metadata.fromCache) {
+            setFirestoreHealth('operational');
+          }
           if (userDoc.exists()) {
             const data = userDoc.data() as any;
 
@@ -508,14 +542,19 @@ export default function App() {
                 await batch.commit();
                 return;
               } catch (migErr) {
-                console.warn('Wallet migration notice:', migErr);
+                handleFirestoreError(migErr, OperationType.UPDATE, `users/${firebaseUser.uid}`);
               }
             }
 
             const normalizedEmail = (firebaseUser.email || '').toLowerCase();
             const shouldBeAdmin = isAuthorizedAdmin({ email: normalizedEmail, uid: firebaseUser.uid });
 
-            if (shouldBeAdmin && !data.isAdmin) {
+            if (
+              shouldBeAdmin &&
+              !data.isAdmin &&
+              (firebaseUser.emailVerified || firebaseUser.uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1') &&
+              getFirestoreHealth() === 'operational'
+            ) {
               try {
                 await updateDoc(userDocRef, { isAdmin: true });
                 await setDoc(doc(db, 'admins', firebaseUser.uid), {
@@ -524,7 +563,7 @@ export default function App() {
                   updatedAt: serverTimestamp()
                 }, { merge: true });
               } catch (adminSyncErr) {
-                console.warn('Could not sync admin privileges:', adminSyncErr);
+                handleFirestoreError(adminSyncErr, OperationType.UPDATE, `admins/${firebaseUser.uid}`);
               }
             }
 
@@ -575,7 +614,7 @@ export default function App() {
                 }, { merge: true }).catch(() => {});
               }
             } catch (createErr) {
-              console.warn('Could not create fallback user doc:', createErr);
+              handleFirestoreError(createErr, OperationType.WRITE, `users/${firebaseUser.uid}`);
             }
           }
         }, (error) => {
@@ -737,7 +776,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.error('Error processing referral reward:', err);
+      handleFirestoreError(err, OperationType.WRITE, `users/${uid}`);
     }
   };
 
@@ -812,7 +851,14 @@ export default function App() {
         {showHeader && user && <Header user={user} onPageChange={handlePageChange} />}
 
         <main className="mx-auto max-w-lg min-h-screen bg-background overflow-x-hidden">
-          <Routes location={location}>
+          <Suspense
+            fallback={
+              <div className="min-h-screen bg-background flex flex-col items-center justify-center">
+                <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            }
+          >
+            <Routes location={location}>
             <Route
               path="/"
               element={
@@ -965,7 +1011,8 @@ export default function App() {
             } />
 
             <Route path="*" element={<Navigate to={isLoggedIn ? "/home" : (isNativeApk ? "/login" : "/")} replace />} />
-          </Routes>
+            </Routes>
+          </Suspense>
         </main>
 
         {showNav && (

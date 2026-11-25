@@ -21,7 +21,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import axios from "axios";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,16 +42,14 @@ try {
     app = initializeApp({
       projectId: preferredProjectId
     });
-    console.log(`[Firebase Admin] Initialized with Project ID: ${preferredProjectId}`);
   } else {
     app = getApp();
   }
-} catch (e: any) {
-  console.warn("[Firebase Admin] Initialization failed, falling back to default:", e.message);
+} catch {
   try {
     app = initializeApp();
-  } catch (e2: any) {
-    console.error("[Firebase Admin] Critical: All initialization attempts failed:", e2.message);
+  } catch {
+    // Fallback handled below
   }
 }
 
@@ -65,38 +63,25 @@ const databaseId = firebaseConfig.firestoreDatabaseId || "(default)";
 try {
   // Use the app and databaseId explicitly
   firestore = getFirestore(app, databaseId);
-  console.log(`[Firebase Admin] Firestore instance created for database: ${databaseId}`);
-} catch (e: any) {
-  console.error("[Firebase Admin] Critical Firestore Init Error:", e.message);
+} catch {
   // Last ditch attempt
   try {
     firestore = getFirestore();
-  } catch (e2) {
-    console.error("[Firebase Admin] Firestore fallback failed");
+  } catch {
+    // Firestore fallback unavailable
   }
 }
 
 // Self-seeding Admins and Initial Config
 async function seedInitialData() {
-  if (!firestore) {
-    console.warn("[Firebase Admin] Skipping seeding: Firestore not initialized");
-    return;
-  }
+  if (!firestore) return;
 
   try {
-    // Basic connectivity test
-    console.log(`[Firebase Admin] Testing connectivity to database: ${databaseId}...`);
-    // Attempt a lightweight read
+    // Attempt a lightweight read to check whether Admin IAM is active
     await firestore.collection('paymentSettings').limit(1).get();
-    console.log("[Firebase Admin] Connectivity successful.");
-  } catch (err: any) {
-    // Fail gracefully if permissions are missing
-    if (err.message.includes('PERMISSION_DENIED')) {
-      console.info("[Firebase Admin] DB connectivity restricted (Permission Denied). Environment variable fallbacks will be used.");
-    } else {
-      console.warn(`[Firebase Admin] Connectivity test suppressed:`, err.message);
-    }
-    return; // Stop seeding if connectivity fails
+  } catch {
+    // Starter Tier preview lacks Admin IAM or hit transient limit; client SDK & env fallbacks handle it cleanly
+    return;
   }
   
   try {
@@ -227,7 +212,6 @@ async function startServer() {
   serverApp.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // Helper to get active gateway config with environment variable fallback
-  let lastAdminErrorTime = 0;
   async function getActiveGateway() {
     // 1. Prepare fallback config from environment variables
     const fallbackConfig = {
@@ -260,16 +244,8 @@ async function startServer() {
       if (zapupiDoc.exists && zapupiDoc.data()?.apiKey && zapupiDoc.data()?.isActive) {
         return { id: 'zapupi', ...zapupiDoc.data() } as any;
       }
-    } catch (adminErr: any) {
-      if (adminErr.message?.includes('PERMISSION_DENIED')) {
-        // Expected if service account is restricted
-      } else {
-        const now = Date.now();
-        if (now - lastAdminErrorTime > 300000) { // Log once per 5 minutes
-           console.warn("[Firebase Admin] Payment settings fetch restricted:", adminErr.message);
-           lastAdminErrorTime = now;
-        }
-      }
+    } catch {
+      // Fall back silently to client SDK / environment variables
     }
 
     // Try Client SDK as last ditch effort

@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Trophy, Key, Copy, Check, X, Loader2 } from 'lucide-react';
 import { Page, User, Tournament, Banner } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, orderBy, where } from 'firebase/firestore';
+import { db, handleFirestoreError, setFirestoreHealth, OperationType } from '../lib/firebase';
+import { collection, onSnapshot, query, limit, getDocs, where } from 'firebase/firestore';
 import { useModalBackHandler } from '../hooks/useModalBackHandler';
 
 import HomeHeader from '../components/HomeHeader';
@@ -73,11 +73,12 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
   };
 
   useEffect(() => {
-    // Realtime matches subscription (client-side sort avoids dropping docs missing matchNumber)
+    // Realtime matches subscription (bounded limit prevents quota exhaustion)
     const unsubMatches = onSnapshot(
-      collection(db, 'matches'),
+      query(collection(db, 'matches'), limit(80)),
       (snapshot) => {
         if (snapshot.empty && snapshot.metadata.fromCache) return;
+        setFirestoreHealth('operational');
         const fetched = snapshot.docs
           .map((doc) => ({ id: doc.id, ...doc.data() } as Tournament))
           .sort((a, b) => (Number(b.matchNumber) || 0) - (Number(a.matchNumber) || 0));
@@ -89,16 +90,16 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
         }
       },
       (err) => {
-        console.error('Error fetching matches for home:', err);
         handleFirestoreError(err, OperationType.LIST, 'matches');
       }
     );
 
     // Realtime active banners
     const unsubBanners = onSnapshot(
-      collection(db, 'banners'),
+      query(collection(db, 'banners'), limit(30)),
       (snapshot) => {
         if (snapshot.empty && snapshot.metadata.fromCache) return;
+        setFirestoreHealth('operational');
         const fetchedBanners = snapshot.docs
           .map((doc) => ({ id: doc.id, ...doc.data() } as Banner))
           .filter((b) => b.isActive !== false)
@@ -125,7 +126,6 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
       setLoadingResults(true);
       const fetchResults = async () => {
         try {
-          const { getDocs, query, collection, where } = await import('firebase/firestore');
           const resSnap = await getDocs(
             query(collection(db, 'matchResults'), where('matchId', '==', selectedResultsMatch.id))
           );
@@ -136,7 +136,7 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
             setSelectedResultsMatch(null);
           }
         } catch (error) {
-          console.error('Error fetching results:', error);
+          handleFirestoreError(error, OperationType.GET, 'matchResults');
         } finally {
           setLoadingResults(false);
         }
@@ -148,7 +148,7 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
   }, [selectedResultsMatch]);
 
   return (
-    <div className="pb-28 max-w-lg mx-auto bg-[#07152b] min-h-screen text-white select-none">
+    <div className="pb-28 max-w-lg mx-auto bg-background min-h-screen text-white select-none">
       {/* 1. Top Header */}
       <HomeHeader 
         user={user} 

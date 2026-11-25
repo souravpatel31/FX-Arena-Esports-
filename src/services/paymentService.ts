@@ -1,4 +1,4 @@
-import { db, auth } from '../lib/firebase';
+import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { PaymentGateway } from '../types';
@@ -38,7 +38,7 @@ class PaymentService {
         }
         this.activeGateway = null;
       }, (error) => {
-        console.warn('[PaymentService] Gateway listener notice:', error.message);
+        handleFirestoreError(error, OperationType.GET, 'appSettings/active_gateway');
       });
     });
   }
@@ -60,7 +60,7 @@ class PaymentService {
         }
       }
     } catch (error: any) {
-      console.warn('[PaymentService] Could not fetch active gateway metadata:', error?.message);
+      handleFirestoreError(error, OperationType.GET, 'appSettings/active_gateway');
     }
     
     return null;

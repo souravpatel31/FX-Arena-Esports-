@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { APP_LOGO_URL } from '../utils/assetUrl';
+import { APP_LOGO_URL, isDeadPlaceholderImage } from '../utils/assetUrl';
 
 interface SafeImageProps {
   src?: string;
@@ -23,6 +23,11 @@ function isInstantSource(value?: string): boolean {
   );
 }
 
+function sanitizeImageSrc(src: string | undefined, fallbackSrc: string): string {
+  if (!src || isDeadPlaceholderImage(src)) return fallbackSrc;
+  return src;
+}
+
 export default function SafeImage({
   src,
   alt = 'Image',
@@ -31,14 +36,15 @@ export default function SafeImage({
   fallbackSrc = APP_LOGO,
   objectFit = 'cover',
 }: SafeImageProps) {
+  const initialSafeSrc = sanitizeImageSrc(src, fallbackSrc);
   const [error, setError] = useState(false);
-  const [currentSrc, setCurrentSrc] = useState<string>(src || fallbackSrc);
-  const [loaded, setLoaded] = useState<boolean>(() => isInstantSource(src));
+  const [currentSrc, setCurrentSrc] = useState<string>(initialSafeSrc);
+  const [loaded, setLoaded] = useState<boolean>(() => isInstantSource(initialSafeSrc));
   const imgRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     setError(false);
-    const nextSrc = src || fallbackSrc;
+    const nextSrc = sanitizeImageSrc(src, fallbackSrc);
     setCurrentSrc(nextSrc);
     if (isInstantSource(nextSrc)) {
       setLoaded(true);
@@ -60,6 +66,18 @@ export default function SafeImage({
   };
 
   const handleLoad = () => {
+    const el = imgRef.current;
+    // Detect ImgBB's "image not found" 161x81 placeholder if returned with 200 status
+    if (
+      el &&
+      currentSrc !== fallbackSrc &&
+      currentSrc.includes('ibb.co') &&
+      el.naturalWidth <= 170 &&
+      el.naturalHeight <= 90
+    ) {
+      handleError();
+      return;
+    }
     setLoaded(true);
   };
 

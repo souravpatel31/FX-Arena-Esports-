@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Shield, Star, Sword, Target, Loader2 } from 'lucide-react';
-import { db } from '../lib/firebase';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 
 interface RulesModalProps {
@@ -79,7 +79,14 @@ export default function RulesModal({ isOpen, onClose, section, onJoin, isJoined 
             ]);
           }
         } catch (error) {
-          console.error("Error fetching rules:", error);
+          handleFirestoreError(error, OperationType.GET, 'gameRules');
+          setRules([
+            'Fair Play: No hacking, scripts or third-party tools allowed.',
+            'Device Requirements: Mobile and Tablet players only. Strictly no emulators.',
+            'Verification: Screenshot of victory/final scorecard is mandatory in case of disputes.',
+            'Late Entry: Room closes right before match starts. Late entry is not entertained.',
+            'Admin Decision: Admin decision will be final and binding for all participants.'
+          ]);
         } finally {
           setLoading(false);
         }

@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Trophy, Key, Copy, Check, X, Loader2 } from 'lucide-react';
 import { Page, User, Tournament, Banner } from '../types';
-import { db, handleFirestoreError, setFirestoreHealth, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, limit, getDocs, where } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { collection, query, limit, where } from 'firebase/firestore';
+import { cachedGetDocs } from '../utils/firestoreCache';
 import { useModalBackHandler } from '../hooks/useModalBackHandler';
 
 import HomeHeader from '../components/HomeHeader';
@@ -73,51 +74,45 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
   };
 
   useEffect(() => {
-    // Realtime matches subscription (bounded limit prevents quota exhaustion)
-    const unsubMatches = onSnapshot(
-      query(collection(db, 'matches'), limit(80)),
-      (snapshot) => {
-        if (snapshot.empty && snapshot.metadata.fromCache) return;
-        setFirestoreHealth('operational');
-        const fetched = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() } as Tournament))
-          .sort((a, b) => (Number(b.matchNumber) || 0) - (Number(a.matchNumber) || 0));
-        setMatches(fetched);
-        try {
-          localStorage.setItem(MATCHES_CACHE_KEY, JSON.stringify(fetched.slice(0, 60)));
-        } catch {
-          // ignore storage limit
-        }
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'matches');
-      }
-    );
+    let active = true;
 
-    // Realtime active banners
-    const unsubBanners = onSnapshot(
-      query(collection(db, 'banners'), limit(30)),
-      (snapshot) => {
-        if (snapshot.empty && snapshot.metadata.fromCache) return;
-        setFirestoreHealth('operational');
-        const fetchedBanners = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data() } as Banner))
+    const loadHomeData = async () => {
+      const [fetchedMatches, fetchedBanners] = await Promise.all([
+        cachedGetDocs<Tournament>(
+          'matches_list',
+          query(collection(db, 'matches'), limit(80)),
+          60_000,
+          { legacyStorageKey: MATCHES_CACHE_KEY, maxPersist: 60, pathLabel: 'matches' }
+        ),
+        cachedGetDocs<Banner>(
+          'banners_list',
+          query(collection(db, 'banners'), limit(30)),
+          15 * 60_000,
+          { legacyStorageKey: BANNERS_CACHE_KEY, maxPersist: 30, pathLabel: 'banners' }
+        ),
+      ]);
+
+      if (!active) return;
+
+      if (fetchedMatches.length > 0) {
+        const sortedMatches = [...fetchedMatches].sort(
+          (a, b) => (Number(b.matchNumber) || 0) - (Number(a.matchNumber) || 0)
+        );
+        setMatches(sortedMatches);
+      }
+
+      if (fetchedBanners.length > 0) {
+        const activeBanners = fetchedBanners
           .filter((b) => b.isActive !== false)
           .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
-        setBanners(fetchedBanners);
-        setHeroBanners(fetchedBanners.filter((b) => b.type === 'main' || b.type === 'offer'));
-        try {
-          localStorage.setItem(BANNERS_CACHE_KEY, JSON.stringify(fetchedBanners));
-        } catch {
-          // ignore
-        }
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'banners')
-    );
+        setBanners(activeBanners);
+        setHeroBanners(activeBanners.filter((b) => b.type === 'main' || b.type === 'offer'));
+      }
+    };
 
+    void loadHomeData();
     return () => {
-      unsubMatches();
-      unsubBanners();
+      active = false;
     };
   }, []);
 
@@ -126,22 +121,21 @@ export default function Home({ user, onPageChange, joinedMatchIds }: HomeProps) 
       setLoadingResults(true);
       const fetchResults = async () => {
         try {
-          const resSnap = await getDocs(
-            query(collection(db, 'matchResults'), where('matchId', '==', selectedResultsMatch.id))
+          const resultsList = await cachedGetDocs(
+            `matchResults_${selectedResultsMatch.id}`,
+            query(collection(db, 'matchResults'), where('matchId', '==', selectedResultsMatch.id), limit(1)),
+            5 * 60_000,
+            { pathLabel: 'matchResults' }
           );
-          if (!resSnap.empty) {
-            setMatchResults(resSnap.docs[0].data());
-          } else {
-            alert('Results not found for this match.');
-            setSelectedResultsMatch(null);
-          }
+          setMatchResults(resultsList[0] || null);
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, 'matchResults');
+          setMatchResults(null);
         } finally {
           setLoadingResults(false);
         }
       };
-      fetchResults();
+      void fetchResults();
     } else {
       setMatchResults(null);
     }

@@ -24,9 +24,8 @@ export default function Header({ user, onPageChange }: HeaderProps) {
             />
           </div>
           <div>
-            <div className="flex items-center gap-1.5 mb-0.5">
-              <span className="text-[9px] text-zinc-500 font-black uppercase tracking-widest leading-none">Server Online</span>
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" />
+            <div className="mb-0.5">
+              <span className="text-[9px] text-zinc-500 font-black uppercase tracking-widest leading-none">Tournament Arena</span>
             </div>
             <h1 className="text-xl font-bold tracking-tighter uppercase leading-none text-white">
               FX Arena <span className="text-purple-500">eSport</span>

@@ -4,7 +4,9 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { ChevronLeft, Loader2, Gamepad, X, Trophy, Key, Copy, Check } from 'lucide-react';
 import { Page, Tournament } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, where, orderBy, doc, getDoc, getDocs, limit } from 'firebase/firestore';
+import { collection, query, where, doc, limit } from 'firebase/firestore';
+import { cachedGetDoc, cachedGetDocs } from '../utils/firestoreCache';
+import { GAME_MODES_DATA } from '../constants';
 import RulesModal from '../components/RulesModal';
 import SafeImage from '../components/SafeImage';
 
@@ -91,10 +93,11 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
   const selectedModeId = searchParams.get('mode');
   const isMyMatches = searchParams.get('my') === '1' || searchParams.get('my') === 'true';
   const [tournaments, setTournaments] = useState<Tournament[]>(() => readCachedList<Tournament>(TOURNAMENT_MATCHES_CACHE_KEY));
-  const [gameModes, setGameModes] = useState<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }[]>(() =>
-    readCachedList<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }>(TOURNAMENT_MODES_CACHE_KEY)
-  );
-  const [loading, setLoading] = useState(() => readCachedList<Tournament>(TOURNAMENT_MATCHES_CACHE_KEY).length === 0);
+  const [gameModes, setGameModes] = useState<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }[]>(() => {
+    const cached = readCachedList<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string }>(TOURNAMENT_MODES_CACHE_KEY);
+    return cached.length > 0 ? cached : (GAME_MODES_DATA.freefire || []).map((m) => ({ ...m, gameId: 'freefire' }));
+  });
+  const [loading, setLoading] = useState(false);
   const [selectedPrizeMatch, setSelectedPrizeMatch] = useState<Tournament | null>(null);
   const [selectedResultsMatch, setSelectedResultsMatch] = useState<Tournament | null>(null);
   const [selectedRulesMatch, setSelectedRulesMatch] = useState<Tournament | null>(null);
@@ -138,16 +141,20 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
       roomNotes: t.roomNotes || '',
     });
     try {
-      const credSnap = await getDoc(doc(db, 'matchCredentials', t.id));
-      if (credSnap.exists()) {
-        const d = credSnap.data();
+      const credData = await cachedGetDoc<{ roomId?: string; roomPassword?: string; roomNotes?: string }>(
+        `matchCreds_${t.id}`,
+        doc(db, 'matchCredentials', t.id),
+        30_000,
+        { persist: false, pathLabel: `matchCredentials/${t.id}` }
+      );
+      if (credData) {
         setShowIdPass({
           isOpen: true,
           loading: false,
           matchTitle: t.title,
-          roomId: d.roomId || t.roomId || '',
-          roomPass: d.roomPassword || t.roomPassword || '',
-          roomNotes: d.roomNotes || '',
+          roomId: credData.roomId || t.roomId || '',
+          roomPass: credData.roomPassword || t.roomPassword || '',
+          roomNotes: credData.roomNotes || '',
         });
         return;
       }
@@ -279,6 +286,10 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
     const matchesStatus = status === activeTab || (status === 'active' && activeTab === 'upcoming');
     if (!matchesStatus) return false;
 
+    if (selectedGameId && m.gameId && m.gameId !== selectedGameId && !isMyMatches) {
+      return false;
+    }
+
     // Mode filter (if provided)
     if (selectedModeId) {
       const modeId = selectedModeId.toLowerCase().trim();
@@ -363,52 +374,29 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
       setLoadingResults(true);
       const fetchResults = async () => {
         try {
-          const resSnap = await getDocs(query(collection(db, 'matchResults'), where('matchId', '==', selectedResultsMatch.id)));
-          if (!resSnap.empty) {
-            setMatchResults(resSnap.docs[0].data());
-          } else {
-            alert('Results not found for this match.');
-            setSelectedResultsMatch(null);
-          }
+          const resultsList = await cachedGetDocs(
+            `matchResults_${selectedResultsMatch.id}`,
+            query(collection(db, 'matchResults'), where('matchId', '==', selectedResultsMatch.id), limit(1)),
+            5 * 60_000,
+            { pathLabel: 'matchResults' }
+          );
+          setMatchResults(resultsList[0] || null);
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, 'matchResults');
+          setMatchResults(null);
         } finally {
           setLoadingResults(false);
         }
       };
-      fetchResults();
+      void fetchResults();
     } else {
       setMatchResults(null);
     }
   }, [selectedResultsMatch]);
 
-  // Listen to gameModes collection for dynamic mode titles and icons
+  // Cached gameModes + shared matches fetch (zero extra reads when clicking between modes)
   useEffect(() => {
-    const qModes = query(collection(db, 'gameModes'), orderBy('order', 'asc'), limit(30));
-    const unsubModes = onSnapshot(
-      qModes,
-      (snapshot) => {
-        if (snapshot.empty && snapshot.metadata.fromCache) return;
-        const modesData = snapshot.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...docSnap.data()
-        })) as { id: string; title: string; category?: string; subtitle?: string; gameId?: string }[];
-        if (modesData.length > 0) {
-          setGameModes(modesData);
-        }
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'gameModes');
-      }
-    );
-
-    return () => unsubModes();
-  }, []);
-
-  useEffect(() => {
-    const q = selectedGameId
-      ? query(collection(db, 'matches'), where('gameId', '==', selectedGameId), limit(100))
-      : query(collection(db, 'matches'), orderBy('createdAt', 'desc'), limit(100));
+    let active = true;
 
     const getTimeMs = (val: any) => {
       if (!val) return 0;
@@ -418,25 +406,42 @@ export default function Tournaments({ onPageChange, joinedMatchIds }: Tournament
       return isNaN(ms) ? 0 : ms;
     };
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (snapshot.empty && snapshot.metadata.fromCache) {
-        setLoading(false);
-        return;
-      }
-      const data = snapshot.docs
-        .map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Tournament[];
-      data.sort((a: any, b: any) => getTimeMs(b.createdAt) - getTimeMs(a.createdAt));
-      setTournaments(data);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'matches');
-      setLoading(false);
-    });
+    const loadTournamentsAndModes = async () => {
+      const [modesData, matchesData] = await Promise.all([
+        cachedGetDocs<{ id: string; title: string; category?: string; subtitle?: string; gameId?: string; order?: number }>(
+          'gameModes_list',
+          query(collection(db, 'gameModes'), limit(30)),
+          15 * 60_000,
+          { legacyStorageKey: TOURNAMENT_MODES_CACHE_KEY, maxPersist: 30, pathLabel: 'gameModes' }
+        ),
+        cachedGetDocs<Tournament>(
+          'matches_list',
+          query(collection(db, 'matches'), limit(80)),
+          60_000,
+          { legacyStorageKey: TOURNAMENT_MATCHES_CACHE_KEY, maxPersist: 60, pathLabel: 'matches' }
+        ),
+      ]);
 
-    return () => unsubscribe();
+      if (!active) return;
+
+      if (modesData.length > 0) {
+        const sortedModes = [...modesData].sort((a, b) => (Number(a.order) || 999) - (Number(b.order) || 999));
+        setGameModes(sortedModes);
+      }
+
+      if (matchesData.length > 0) {
+        const sortedMatches = [...matchesData].sort(
+          (a: any, b: any) => getTimeMs(b.createdAt) - getTimeMs(a.createdAt) || (Number(b.matchNumber) || 0) - (Number(a.matchNumber) || 0)
+        );
+        setTournaments(sortedMatches);
+      }
+      setLoading(false);
+    };
+
+    void loadTournamentsAndModes();
+    return () => {
+      active = false;
+    };
   }, [selectedGameId]);
 
   if (loading) {

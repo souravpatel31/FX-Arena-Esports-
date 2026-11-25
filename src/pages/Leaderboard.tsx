@@ -27,7 +27,7 @@ export default function Leaderboard() {
   });
   const [periodTransactions, setPeriodTransactions] = useState<any[]>(() => {
     try {
-      const raw = localStorage.getItem(`${LEADERBOARD_CACHE_KEY}_tx`);
+      const raw = localStorage.getItem(`${LEADERBOARD_CACHE_KEY}_weekly_tx`) || localStorage.getItem(`${LEADERBOARD_CACHE_KEY}_tx`);
       if (raw) return JSON.parse(raw);
     } catch {
       // ignore
@@ -83,7 +83,27 @@ export default function Leaderboard() {
       startDate.setHours(0, 0, 0, 0);
     }
 
+    const tabTxKey = `${LEADERBOARD_CACHE_KEY}_${activeTab}_tx`;
+    const tabTsKey = `${LEADERBOARD_CACHE_KEY}_${activeTab}_ts`;
+
     const loadWinTx = async () => {
+      try {
+        const cachedRaw = localStorage.getItem(tabTxKey);
+        const cachedTs = Number(localStorage.getItem(tabTsKey) || '0');
+        if (cachedRaw) {
+          const parsed = JSON.parse(cachedRaw);
+          if (Array.isArray(parsed)) {
+            setPeriodTransactions(parsed);
+            setLoading(false);
+            if (Date.now() - cachedTs < CACHE_TTL_MS) {
+              return;
+            }
+          }
+        }
+      } catch {
+        // ignore cache error
+      }
+
       if (periodTransactions.length === 0) setLoading(true);
       try {
         const q = query(collection(db, 'transactions'), where('type', '==', 'win'), limit(120));
@@ -104,7 +124,8 @@ export default function Leaderboard() {
           });
         setPeriodTransactions(filtered);
         try {
-          localStorage.setItem(`${LEADERBOARD_CACHE_KEY}_tx`, JSON.stringify(filtered));
+          localStorage.setItem(tabTxKey, JSON.stringify(filtered));
+          localStorage.setItem(tabTsKey, String(Date.now()));
         } catch {
           // ignore
         }
@@ -115,7 +136,7 @@ export default function Leaderboard() {
       }
     };
 
-    loadWinTx();
+    void loadWinTx();
     return () => {
       active = false;
     };

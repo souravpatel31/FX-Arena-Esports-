@@ -7,7 +7,8 @@ import {
 } from 'lucide-react';
 import { Page, AppNotification, User } from '../types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, orderBy, limit, doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { subscribeSharedNotifications } from '../utils/firestoreCache';
 import { useModalBackHandler } from '../hooks/useModalBackHandler';
 import SafeImage from './SafeImage';
 import {
@@ -55,20 +56,9 @@ export default function NotificationsModal({
   useEffect(() => {
     if (!isOpen) return;
 
-    const q = query(
-      collection(db, 'notifications'), 
-      orderBy('createdAt', 'desc'),
-      limit(30)
-    );
-
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(d => ({
-        id: d.id,
-        ...d.data()
-      } as AppNotification));
-
+    const unsub = subscribeSharedNotifications(user?.id || 'guest', (list) => {
       // Strict audience check: match notifications ONLY for joined players of that match
-      const filtered = list.filter(item => {
+      const filtered = list.filter((item) => {
         if (!item.audience || item.audience === 'all') return true;
         if (item.audience === 'match') {
           return Boolean(item.targetMatchId && joinedMatchIds.includes(item.targetMatchId));
@@ -80,9 +70,6 @@ export default function NotificationsModal({
       });
 
       setNotifications(filtered);
-      setLoading(false);
-    }, (err) => {
-      handleFirestoreError(err, OperationType.LIST, 'notifications');
       setLoading(false);
     });
 
@@ -376,7 +363,7 @@ export default function NotificationsModal({
                                 handleMarkAsRead(item.id);
                                 onClose();
                                 if (item.actionUrl) {
-                                  window.open(item.actionUrl, '_blank');
+                                  window.location.assign(item.actionUrl);
                                 } else if (item.actionPage) {
                                   onPageChange(item.actionPage as Page, item.targetMatchId);
                                 }

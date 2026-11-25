@@ -9,9 +9,10 @@ import {
 } from '../types';
 import { db } from '../lib/firebase';
 import { 
-  collection, addDoc, deleteDoc, doc, onSnapshot, 
+  collection, addDoc, deleteDoc, doc,
   query, orderBy, serverTimestamp, limit 
 } from 'firebase/firestore';
+import { cachedGetDocs, invalidateFirestoreCache } from '../utils/firestoreCache';
 
 interface AdminNotificationsTabProps {
   matches: Tournament[];
@@ -33,46 +34,50 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
   const [historyNotifications, setHistoryNotifications] = useState<AppNotification[]>([]);
   const [showHistory, setShowHistory] = useState(false);
 
-  // Realtime subscription to sent notifications
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // Cached sent notifications history (avoids extra always-on listener in Admin)
   useEffect(() => {
-    const q = query(
-      collection(db, 'notifications'),
-      orderBy('createdAt', 'desc'),
-      limit(20)
-    );
-
-    const unsub = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(d => ({
-        id: d.id,
-        ...d.data()
-      } as AppNotification));
-      setHistoryNotifications(list);
-    }, (err) => {
-      console.warn('Notifications stream error:', err);
-    });
-
-    return () => unsub();
-  }, []);
+    let active = true;
+    const loadHistory = async () => {
+      const q = query(
+        collection(db, 'notifications'),
+        orderBy('createdAt', 'desc'),
+        limit(20)
+      );
+      const list = await cachedGetDocs<AppNotification>(
+        'admin_notifications_history',
+        q,
+        2 * 60_000,
+        { pathLabel: 'notifications', persist: false }
+      );
+      if (active) setHistoryNotifications(list);
+    };
+    loadHistory();
+    return () => {
+      active = false;
+    };
+  }, [refreshTick]);
 
   const handleSendNotification = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     
     if (!title.trim()) {
-      alert('Please enter a notification title.');
+      setErrorMsg('Please enter a notification title.');
       return;
     }
     if (!body.trim()) {
-      alert('Please enter a notification message.');
+      setErrorMsg('Please enter a notification message.');
       return;
     }
 
     if (selectedAudience === 'tournament' && !selectedMatchId) {
-      alert('Please select a tournament / match.');
+      setErrorMsg('Please select a tournament / match.');
       return;
     }
 
     if (selectedAudience === 'custom' && !selectedUserId) {
-      alert('Please select a custom user.');
+      setErrorMsg('Please select a custom user.');
       return;
     }
 
@@ -110,6 +115,9 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
       }
 
       await addDoc(collection(db, 'notifications'), notifData);
+      invalidateFirestoreCache('admin_notifications_history');
+      invalidateFirestoreCache('shared_notifications_v1');
+      setRefreshTick((t) => t + 1);
 
       setTitle('');
       setBody('');
@@ -122,7 +130,6 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
         ? 'Permission denied. Please verify your email or ask Super Admin to tap "Sync Staff" in Users tab.'
         : 'Failed to send notification: ' + rawMsg;
       setErrorMsg(friendly);
-      alert(friendly);
     } finally {
       setIsSending(false);
     }
@@ -133,11 +140,13 @@ export default function AdminNotificationsTab({ matches, users, onPageChange }: 
     setErrorMsg(null);
     try {
       await deleteDoc(doc(db, 'notifications', id));
+      invalidateFirestoreCache('admin_notifications_history');
+      invalidateFirestoreCache('shared_notifications_v1');
+      setHistoryNotifications((prev) => prev.filter((item) => item.id !== id));
     } catch (e: any) {
       console.error('Delete error:', e);
       const msg = e?.message || 'Failed to delete notification.';
       setErrorMsg(msg);
-      alert(msg);
     }
   };
 

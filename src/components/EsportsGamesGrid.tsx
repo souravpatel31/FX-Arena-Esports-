@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Page, Tournament } from '../types';
-import { db, handleFirestoreError, setFirestoreHealth, OperationType } from '../lib/firebase';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import { collection, query, limit } from 'firebase/firestore';
+import { cachedGetDocs } from '../utils/firestoreCache';
 import { GAME_MODES_DATA } from '../constants';
 import SafeImage from './SafeImage';
 import { resolveSafeModeImage } from '../utils/assetUrl';
@@ -52,51 +53,44 @@ export default function EsportsGamesGrid({ matches, onPageChange }: EsportsGames
   const [activeTab, setActiveTab] = useState<'all' | 'tournament' | 'solo'>('all');
   const [modes, setModes] = useState<GameMode[]>(getInitialGameModes);
 
-  // Fetch real dynamic game modes configured in Admin without flashing empty states
+  // Fetch real dynamic game modes configured in Admin with TTL caching
   useEffect(() => {
-    const unsubscribe = onSnapshot(
-      collection(db, 'gameModes'),
-      (snapshot) => {
-        // Never overwrite cached/default modes with an empty initial offline cache snapshot
-        if (snapshot.empty && snapshot.metadata.fromCache) {
-          return;
-        }
+    let active = true;
+    const loadModes = async () => {
+      const rawModes = await cachedGetDocs<Partial<GameMode>>(
+        'gameModes_list',
+        query(collection(db, 'gameModes'), limit(30)),
+        15 * 60_000,
+        { legacyStorageKey: MODES_CACHE_KEY, maxPersist: 30, pathLabel: 'gameModes' }
+      );
+      if (!active) return;
 
-        setFirestoreHealth('operational');
-        const fetchedModes = snapshot.docs
-          .map((docSnap) => {
-            const d = docSnap.data() as Partial<GameMode>;
-            const title = d.title || 'ARENA';
-            return {
-              id: d.id || docSnap.id,
-              gameId: d.gameId || 'freefire',
-              title,
-              subtitle: d.subtitle || 'Battleground',
-              image: resolveSafeModeImage(d.image, `${title} ${d.subtitle || ''} ${docSnap.id}`),
-              category: d.category || d.subtitle || 'Arena',
-              order: Number(d.order ?? 999),
-            } as GameMode;
-          })
-          .sort((a, b) => (Number(a.order) || 999) - (Number(b.order) || 999));
+      const normalizedModes = rawModes
+        .map((d) => {
+          const title = d.title || 'ARENA';
+          return {
+            id: d.id || '',
+            gameId: d.gameId || 'freefire',
+            title,
+            subtitle: d.subtitle || 'Battleground',
+            image: resolveSafeModeImage(d.image, `${title} ${d.subtitle || ''} ${d.id || ''}`),
+            category: d.category || d.subtitle || 'Arena',
+            order: Number(d.order ?? 999),
+          } as GameMode;
+        })
+        .sort((a, b) => (Number(a.order) || 999) - (Number(b.order) || 999));
 
-        if (fetchedModes.length > 0) {
-          setModes(fetchedModes);
-          try {
-            localStorage.setItem(MODES_CACHE_KEY, JSON.stringify(fetchedModes));
-          } catch {
-            // Ignore storage quota errors
-          }
-        } else {
-          // Keep clean preset fallback modes instead of flashing "No Game Modes Added Yet"
-          setModes(DEFAULT_FALLBACK_MODES);
-        }
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'gameModes');
+      if (normalizedModes.length > 0) {
+        setModes(normalizedModes);
+      } else {
+        setModes(DEFAULT_FALLBACK_MODES);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    void loadModes();
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Filter modes dynamically based on active tab

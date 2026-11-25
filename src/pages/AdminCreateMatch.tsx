@@ -9,10 +9,11 @@ import {
 import { Page, Tournament } from '../types';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { sendEmailVerification } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, serverTimestamp, runTransaction, query, orderBy } from 'firebase/firestore';
+import { collection, doc, getDoc, serverTimestamp, runTransaction, query, limit } from 'firebase/firestore';
 import { GameMode } from './AdminModes';
 import { uploadOriginalImage, compactImageForFirestore } from '../utils/imageCompressor';
 import { hasControlPanelAccess, isStaffUser } from '../utils/adminAuth';
+import { cachedGetDocs, invalidateFirestoreCache } from '../utils/firestoreCache';
 
 function getDefaultMatchDateTime(): string {
   const d = new Date(Date.now() + 60 * 60 * 1000);
@@ -135,14 +136,17 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
     const fetchGameModes = async () => {
       setLoadingModes(true);
       try {
-        const q = query(collection(db, 'gameModes'), orderBy('order', 'asc'));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          const list = snap.docs.map(d => ({ ...d.data() }) as GameMode);
-          const filtered = list.filter(m => !matchForm.gameId || m.gameId === matchForm.gameId);
-          if (filtered.length > 0) {
-            setAvailableModes(filtered);
-          }
+        const list = await cachedGetDocs<GameMode>(
+          'gameModes_list',
+          query(collection(db, 'gameModes'), limit(30)),
+          15 * 60_000,
+          { pathLabel: 'gameModes', legacyStorageKey: 'fxarena_cached_game_modes' }
+        );
+        const filtered = list
+          .filter(m => !matchForm.gameId || m.gameId === matchForm.gameId)
+          .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+        if (filtered.length > 0) {
+          setAvailableModes(filtered);
         }
       } catch (err) {
         console.warn('Could not fetch custom game modes, using presets:', err);
@@ -444,6 +448,8 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
         transaction.set(counterRef, { matchCount: newMatchNumber }, { merge: true });
       });
 
+      invalidateFirestoreCache('admin_matches');
+      invalidateFirestoreCache('matches_list');
       alert('Match created successfully!');
       onPageChange(Page.ADMIN);
     } catch (e: any) {

@@ -22,7 +22,8 @@ import {
 } from 'lucide-react';
 import { Page, Tournament, User } from '../types';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, onSnapshot, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, where, limit } from 'firebase/firestore';
+import { cachedGetDoc, cachedGetDocs } from '../utils/firestoreCache';
 import SafeImage from '../components/SafeImage';
 
 interface MatchDetailsProps {
@@ -82,12 +83,28 @@ function getDefaultEsportsImage(section?: string, mode?: string) {
   return 'https://images.unsplash.com/photo-1538481199705-c710c4e965fc?q=80&w=1200&auto=format&fit=crop';
 }
 
+function getCachedMatchById(matchId: string): Tournament | null {
+  if (!matchId) return null;
+  try {
+    const raw = localStorage.getItem('fxarena_cached_matches');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return (parsed.find((m: any) => m?.id === matchId) as Tournament) || null;
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
 export default function MatchDetails({ user, onPageChange, joinedMatchIds }: MatchDetailsProps) {
   const { id } = useParams<{ id: string }>();
   const matchId = id || '';
 
-  const [matchData, setMatchData] = useState<Tournament | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [matchData, setMatchData] = useState<Tournament | null>(() => getCachedMatchById(matchId));
+  const [loading, setLoading] = useState(() => !getCachedMatchById(matchId));
   const [error, setError] = useState<string | null>(null);
   const [showAllJoiningsModal, setShowAllJoiningsModal] = useState(false);
   const [joiningsSearch, setJoiningsSearch] = useState('');
@@ -115,26 +132,47 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
       try {
         const sec = (matchData.section || matchData.mode || 'Battle Royale').toLowerCase().trim();
         const normKey = sec.replace(/[^a-z0-9]+/g, '_');
-        let snap = await getDoc(doc(db, 'gameRules', normKey));
-        if (!snap.exists() && matchData.modeId) {
-          snap = await getDoc(doc(db, 'gameRules', matchData.modeId));
+        let ruleData = await cachedGetDoc<{ rules?: string[] }>(
+          `gameRule_${normKey}`,
+          doc(db, 'gameRules', normKey),
+          15 * 60_000,
+          { pathLabel: `gameRules/${normKey}` }
+        );
+        if ((!ruleData || !ruleData.rules?.length) && matchData.modeId) {
+          ruleData = await cachedGetDoc<{ rules?: string[] }>(
+            `gameRule_${matchData.modeId}`,
+            doc(db, 'gameRules', matchData.modeId),
+            15 * 60_000,
+            { pathLabel: `gameRules/${matchData.modeId}` }
+          );
         }
-        if (!snap.exists()) {
-          if (sec.includes('clash') || sec.includes('4v4')) snap = await getDoc(doc(db, 'gameRules', 'clash_squad'));
-          else if (sec.includes('lone') || sec.includes('wolf') || sec.includes('1v1')) snap = await getDoc(doc(db, 'gameRules', 'lone_wolf'));
-          else if (sec.includes('sniper')) snap = await getDoc(doc(db, 'gameRules', 'sniper_only'));
-          else if (sec.includes('custom')) snap = await getDoc(doc(db, 'gameRules', 'custom_room'));
-          else snap = await getDoc(doc(db, 'gameRules', 'battle_royale'));
+        if (!ruleData || !ruleData.rules?.length) {
+          const fallbackKey =
+            sec.includes('clash') || sec.includes('4v4')
+              ? 'clash_squad'
+              : sec.includes('lone') || sec.includes('wolf') || sec.includes('1v1')
+              ? 'lone_wolf'
+              : sec.includes('sniper')
+              ? 'sniper_only'
+              : sec.includes('custom')
+              ? 'custom_room'
+              : 'battle_royale';
+          ruleData = await cachedGetDoc<{ rules?: string[] }>(
+            `gameRule_${fallbackKey}`,
+            doc(db, 'gameRules', fallbackKey),
+            15 * 60_000,
+            { pathLabel: `gameRules/${fallbackKey}` }
+          );
         }
 
-        if (snap.exists() && snap.data().rules && snap.data().rules.length > 0) {
-          setSectionRules(snap.data().rules);
+        if (ruleData?.rules && ruleData.rules.length > 0) {
+          setSectionRules(ruleData.rules);
         }
       } catch (err) {
         console.warn('Failed to load dynamic rules:', err);
       }
     };
-    fetchRules();
+    void fetchRules();
   }, [matchData?.id, matchData?.section, matchData?.mode, matchData?.modeId, matchData?.rules]);
 
   useEffect(() => {
@@ -142,6 +180,12 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
       setError('Match ID not found');
       setLoading(false);
       return;
+    }
+
+    const cached = getCachedMatchById(matchId);
+    if (cached) {
+      setMatchData(cached);
+      setLoading(false);
     }
 
     const docRef = doc(db, 'matches', matchId);
@@ -152,15 +196,17 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
           const data = { id: docSnap.id, ...docSnap.data() } as Tournament;
           setMatchData(data);
           setError(null);
-        } else {
+        } else if (!cached) {
           setError('Match does not exist or has been removed');
         }
         setLoading(false);
       },
       (err) => {
-        console.error('Error fetching match details:', err);
         handleFirestoreError(err, OperationType.GET, `matches/${matchId}`);
-        setError('Failed to load match details');
+        setMatchData((prev) => {
+          if (!prev) setError('Failed to load match details');
+          return prev;
+        });
         setLoading(false);
       }
     );
@@ -363,9 +409,14 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
               setShowRoomDetailsModal(true);
               setLoadingCreds(true);
               try {
-                const cSnap = await getDoc(doc(db, 'matchCredentials', matchId));
-                if (cSnap.exists()) {
-                  setRoomCreds(cSnap.data() as any);
+                const cData = await cachedGetDoc<any>(
+                  `matchCreds_${matchId}`,
+                  doc(db, 'matchCredentials', matchId),
+                  30_000,
+                  { persist: false, pathLabel: `matchCredentials/${matchId}` }
+                );
+                if (cData) {
+                  setRoomCreds(cData);
                 } else {
                   setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
                 }
@@ -604,12 +655,13 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
               setShowResultsModal(true);
               setLoadingResults(true);
               try {
-                const resSnap = await getDocs(query(collection(db, 'matchResults'), where('matchId', '==', matchId)));
-                if (!resSnap.empty) {
-                  setMatchResultsData(resSnap.docs[0].data());
-                } else {
-                  setMatchResultsData(null);
-                }
+                const resultsList = await cachedGetDocs(
+                  `matchResults_${matchId}`,
+                  query(collection(db, 'matchResults'), where('matchId', '==', matchId), limit(1)),
+                  5 * 60_000,
+                  { pathLabel: 'matchResults' }
+                );
+                setMatchResultsData(resultsList[0] || null);
               } catch {
                 setMatchResultsData(null);
               } finally {
@@ -630,9 +682,14 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                   setShowRoomDetailsModal(true);
                   setLoadingCreds(true);
                   try {
-                    const cSnap = await getDoc(doc(db, 'matchCredentials', matchId));
-                    if (cSnap.exists()) {
-                      setRoomCreds(cSnap.data() as any);
+                    const cData = await cachedGetDoc<any>(
+                      `matchCreds_${matchId}`,
+                      doc(db, 'matchCredentials', matchId),
+                      30_000,
+                      { persist: false, pathLabel: `matchCredentials/${matchId}` }
+                    );
+                    if (cData) {
+                      setRoomCreds(cData);
                     } else {
                       setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
                     }
@@ -673,9 +730,14 @@ export default function MatchDetails({ user, onPageChange, joinedMatchIds }: Mat
                   setShowRoomDetailsModal(true);
                   setLoadingCreds(true);
                   try {
-                    const cSnap = await getDoc(doc(db, 'matchCredentials', matchId));
-                    if (cSnap.exists()) {
-                      setRoomCreds(cSnap.data() as any);
+                    const cData = await cachedGetDoc<any>(
+                      `matchCreds_${matchId}`,
+                      doc(db, 'matchCredentials', matchId),
+                      30_000,
+                      { persist: false, pathLabel: `matchCredentials/${matchId}` }
+                    );
+                    if (cData) {
+                      setRoomCreds(cData);
                     } else {
                       setRoomCreds({ roomId: matchData.roomId, roomPassword: matchData.roomPassword, roomNotes: matchData.roomNotes });
                     }

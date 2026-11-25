@@ -5,7 +5,8 @@ import { Share } from '@capacitor/share';
 import { Capacitor } from '@capacitor/core';
 import { Page, User } from '../types';
 import { db } from '../lib/firebase';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+import { cachedGetDoc } from '../utils/firestoreCache';
 import { buildAppSharePayload } from '../utils/shareLinks';
 
 interface ReferralPageProps {
@@ -19,12 +20,22 @@ export default function ReferralPage({ user, onPageChange }: ReferralPageProps) 
   const [appSettings, setAppSettings] = useState<any>(null);
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'appSettings', 'referral_support'), (snap) => {
-      if (snap.exists()) {
-        setAppSettings(snap.data());
+    let active = true;
+    const loadSettings = async () => {
+      const data = await cachedGetDoc<any>(
+        'appSettings_referral_support',
+        doc(db, 'appSettings', 'referral_support'),
+        15 * 60_000,
+        { pathLabel: 'appSettings/referral_support' }
+      );
+      if (active && data) {
+        setAppSettings(data);
       }
-    });
-    return () => unsub();
+    };
+    void loadSettings();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const referralCode = user.username;

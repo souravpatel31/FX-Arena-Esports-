@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  ArrowLeft, Shield, Users, Trophy, DollarSign,
+  ArrowLeft, Users, Trophy, DollarSign,
   Search, Ban, Unlock, Plus, Minus, Trash2, 
   Clock, Map as MapIcon, Users as UsersIcon,
   CheckCircle2, AlertCircle, Loader2, Save, RefreshCw,
@@ -14,12 +14,13 @@ import {
   db,
   auth,
   handleFirestoreError,
-  getFirestoreHealth,
-  subscribeFirestoreHealth,
-  setFirestoreHealth,
-  type FirestoreHealthState,
   OperationType,
 } from '../lib/firebase';
+import {
+  cachedGetDoc,
+  cachedGetDocs,
+  invalidateFirestoreCache,
+} from '../utils/firestoreCache';
 import { formatMatchTime } from '../utils/dateUtils';
 import SafeImage from '../components/SafeImage';
 import { uploadOriginalImage, compactImageForFirestore } from '../utils/imageCompressor';
@@ -28,7 +29,7 @@ import { isAuthorizedAdmin, isStaffUser, hasControlPanelAccess, STAFF_EMAILS } f
 import { isBlockedShareUrl } from '../utils/shareLinks';
 
 import { 
-  collection, doc, onSnapshot, updateDoc, deleteDoc,
+  collection, doc, updateDoc, deleteDoc,
   addDoc, serverTimestamp, runTransaction, writeBatch,
   query, orderBy, getDoc, increment, setDoc, limit
 } from 'firebase/firestore';
@@ -191,11 +192,13 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const [users, setUsers] = useState<User[]>(() => initialCache.users || []);
   const [matches, setMatches] = useState<Tournament[]>(() => initialCache.matches || []);
   const [transactions, setTransactions] = useState<any[]>(() => initialCache.transactions || []);
-  const [dbHealth, setDbHealth] = useState<FirestoreHealthState>(() => getFirestoreHealth());
   const [refreshKey, setRefreshKey] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const onPageChangeRef = React.useRef(onPageChange);
   onPageChangeRef.current = onPageChange;
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(
+    () => !initialCache.users?.length && !initialCache.matches?.length
+  );
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState<{ isOpen: boolean, matchId: string }>({ isOpen: false, matchId: '' });
@@ -307,12 +310,21 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     }
   };
 
-  useEffect(() => {
-    return subscribeFirestoreHealth(setDbHealth);
-  }, []);
+  const triggerAdminRefresh = (clearAll = false) => {
+    setIsRefreshing(true);
+    if (clearAll) {
+      invalidateFirestoreCache('admin_');
+      invalidateFirestoreCache('matches_list');
+      invalidateFirestoreCache('gameModes_list');
+      invalidateFirestoreCache('banners_list');
+      invalidateFirestoreCache('appSettings_');
+    }
+    setRefreshKey((k) => k + 1);
+  };
 
-  // Real-time listeners
+  // Cached & bounded admin data loader (prevents daily quota exhaustion on re-mounts)
   useEffect(() => {
+    let active = true;
     const currentUser = auth.currentUser;
     const uid = currentUser?.uid;
     const isFull = isAuthorizedAdmin(currentUser);
@@ -329,152 +341,201 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
       );
     }
 
-    // Check if admin/staff needs email verification for Firestore rule writes
-    const checkAdminWriteStatus = async () => {
+    const loadAdminData = async () => {
       try {
+        // Check if admin/staff needs email verification for Firestore rule writes
         if (uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1' || currentUser?.emailVerified) {
-          setNeedsAdminVerification(false);
-          return;
+          if (active) setNeedsAdminVerification(false);
+        } else if (uid) {
+          const roleCol = isStaff ? 'staff' : 'admins';
+          const roleDoc = await cachedGetDoc(
+            `admin_write_check_${uid}`,
+            doc(db, roleCol, uid),
+            10 * 60_000,
+            { persist: false, pathLabel: `${roleCol}/${uid}` }
+          );
+          if (active) setNeedsAdminVerification(!roleDoc);
         }
-        if (isStaff && uid) {
-          const staffDoc = await getDoc(doc(db, 'staff', uid));
-          setNeedsAdminVerification(!staffDoc.exists());
-          return;
+
+        const OPERATIONAL_TTL = 2 * 60_000;
+        const CONFIG_TTL = 10 * 60_000;
+
+        const [usersList, matchesList, credsList] = await Promise.all([
+          cachedGetDocs<User>(
+            'admin_users',
+            query(collection(db, 'users'), limit(120)),
+            OPERATIONAL_TTL,
+            { pathLabel: 'users' }
+          ),
+          cachedGetDocs<Tournament>(
+            'admin_matches',
+            query(collection(db, 'matches'), limit(80)),
+            OPERATIONAL_TTL,
+            {
+              pathLabel: 'matches',
+              legacyStorageKey: 'fxarena_cached_matches',
+              maxPersist: 60,
+            }
+          ),
+          cachedGetDocs<any>(
+            'admin_matchCreds',
+            query(collection(db, 'matchCredentials'), limit(80)),
+            OPERATIONAL_TTL,
+            { persist: false, pathLabel: 'matchCredentials' }
+          ),
+        ]);
+
+        if (!active) return;
+
+        if (usersList.length > 0) {
+          setUsers(usersList);
+          writeAdminCache({ users: usersList });
         }
-        if (uid) {
-          const adminDoc = await getDoc(doc(db, 'admins', uid));
-          setNeedsAdminVerification(!adminDoc.exists());
+
+        if (matchesList.length > 0) {
+          setMatches(matchesList);
+          writeAdminCache({ matches: matchesList });
+        } else {
+          try {
+            const rawMatches = localStorage.getItem('fxarena_cached_matches');
+            if (rawMatches) {
+              const parsed = JSON.parse(rawMatches);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                setMatches(parsed);
+              }
+            }
+          } catch {
+            // ignore
+          }
         }
-      } catch {
-        setNeedsAdminVerification(!currentUser?.emailVerified && uid !== 'XoXyXcnrlzOaMIKKolXnU3mT9xn1');
-      }
-    };
-    checkAdminWriteStatus();
 
-    const unsubs: (() => void)[] = [];
-
-    unsubs.push(
-      onSnapshot(query(collection(db, 'users'), limit(250)), (snapshot) => {
-        if (!snapshot.metadata.fromCache) setFirestoreHealth('operational');
-        if (snapshot.metadata.fromCache && snapshot.empty) return;
-        const usersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as User));
-        setUsers(usersList);
-        writeAdminCache({ users: usersList });
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'users'))
-    );
-
-    unsubs.push(
-      onSnapshot(query(collection(db, 'matches'), limit(150)), (snapshot) => {
-        if (!snapshot.metadata.fromCache) setFirestoreHealth('operational');
-        if (snapshot.metadata.fromCache && snapshot.empty) return;
-        const matchesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Tournament));
-        setMatches(matchesList);
-        writeAdminCache({ matches: matchesList });
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'matches'))
-    );
-
-    unsubs.push(
-      onSnapshot(query(collection(db, 'matchCredentials'), limit(150)), (snapshot) => {
-        if (!snapshot.metadata.fromCache) setFirestoreHealth('operational');
-        if (snapshot.metadata.fromCache && snapshot.empty) return;
         const credMap: Record<string, { roomId?: string; roomPassword?: string; roomNotes?: string }> = {};
-        snapshot.docs.forEach((docSnap) => {
-          const d = docSnap.data();
-          credMap[docSnap.id] = {
+        credsList.forEach((d: any) => {
+          if (!d?.id) return;
+          credMap[d.id] = {
             roomId: d.roomId || '',
             roomPassword: d.roomPassword || '',
             roomNotes: d.roomNotes || '',
           };
         });
         setMatchCredentialsMap(credMap);
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'matchCredentials'))
-    );
 
-    if (isFull) {
-      unsubs.push(
-        onSnapshot(query(collection(db, 'transactions'), orderBy('createdAt', 'desc'), limit(200)), (snapshot) => {
-          if (!snapshot.metadata.fromCache) setFirestoreHealth('operational');
-          if (snapshot.metadata.fromCache && snapshot.empty) return;
-          const txList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          setTransactions(txList);
-          writeAdminCache({ transactions: txList });
-        }, (err) => handleFirestoreError(err, OperationType.LIST, 'transactions'))
-      );
+        if (isFull) {
+          const [
+            txList,
+            rulesList,
+            modesList,
+            referralSettings,
+            rawBannersList,
+            gatewaysList,
+            qrDocData,
+          ] = await Promise.all([
+            cachedGetDocs<any>(
+              'admin_tx',
+              query(collection(db, 'transactions'), orderBy('createdAt', 'desc'), limit(100)),
+              OPERATIONAL_TTL,
+              { pathLabel: 'transactions' }
+            ),
+            cachedGetDocs<any>(
+              'admin_gameRules',
+              query(collection(db, 'gameRules'), limit(30)),
+              CONFIG_TTL,
+              { pathLabel: 'gameRules' }
+            ),
+            cachedGetDocs<any>(
+              'gameModes_list',
+              query(collection(db, 'gameModes'), limit(30)),
+              CONFIG_TTL,
+              { pathLabel: 'gameModes', legacyStorageKey: 'fxarena_cached_game_modes' }
+            ),
+            cachedGetDoc<any>(
+              'appSettings_referral_support',
+              doc(db, 'appSettings', 'referral_support'),
+              CONFIG_TTL,
+              { pathLabel: 'appSettings/referral_support' }
+            ),
+            cachedGetDocs<Banner>(
+              'banners_list',
+              query(collection(db, 'banners'), limit(30)),
+              CONFIG_TTL,
+              { pathLabel: 'banners' }
+            ),
+            cachedGetDocs<PaymentGateway>(
+              'admin_paymentSettings',
+              query(collection(db, 'paymentSettings'), limit(15)),
+              CONFIG_TTL,
+              { pathLabel: 'paymentSettings' }
+            ),
+            cachedGetDoc<any>(
+              'appSettings_payment_qr',
+              doc(db, 'appSettings', 'payment_qr'),
+              CONFIG_TTL,
+              { pathLabel: 'appSettings/payment_qr' }
+            ),
+          ]);
 
-      unsubs.push(
-        onSnapshot(query(collection(db, 'gameRules'), limit(30)), (snapshot) => {
-          if (snapshot.metadata.fromCache && snapshot.empty) return;
+          if (!active) return;
+
+          if (txList.length > 0) {
+            setTransactions(txList);
+            writeAdminCache({ transactions: txList });
+          }
+
           const docsMap: Record<string, any> = {};
-          snapshot.docs.forEach(docSnap => {
-            const data = docSnap.data();
-            docsMap[docSnap.id] = {
-              id: docSnap.id,
-              title: data.title || data.section || data.type || docSnap.id.replace(/_/g, ' '),
+          rulesList.forEach((data: any) => {
+            if (!data?.id) return;
+            docsMap[data.id] = {
+              id: data.id,
+              title: data.title || data.section || data.type || data.id.replace(/_/g, ' '),
               category: data.category || data.title || 'General',
-              section: data.section || data.title || docSnap.id,
+              section: data.section || data.title || data.id,
               rules: data.rules || [],
-              updatedAt: data.updatedAt
+              updatedAt: data.updatedAt,
             };
           });
           setGameRulesDocs(docsMap);
-        }, (err) => handleFirestoreError(err, OperationType.LIST, 'gameRules'))
-      );
 
-      unsubs.push(
-        onSnapshot(query(collection(db, 'gameModes'), limit(30)), (snapshot) => {
-          if (snapshot.metadata.fromCache && snapshot.empty) return;
-          setGameModesList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        }, (err) => handleFirestoreError(err, OperationType.LIST, 'gameModes'))
-      );
-
-      unsubs.push(
-        onSnapshot(doc(db, 'appSettings', 'referral_support'), (snapshot) => {
-          if (snapshot.exists()) {
-            const data = snapshot.data();
-            setAppSettings(data);
-            writeAdminCache({ appSettings: data });
+          if (modesList.length > 0) {
+            setGameModesList([...modesList].sort((a, b) => (a.order ?? 999) - (b.order ?? 999)));
           }
-        }, (err) => handleFirestoreError(err, OperationType.GET, 'appSettings/referral_support'))
-      );
 
-      unsubs.push(
-        onSnapshot(query(collection(db, 'banners'), orderBy('order', 'asc'), limit(30)), (snapshot) => {
-          if (snapshot.metadata.fromCache && snapshot.empty) return;
-          const bannerList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Banner));
-          setBanners(bannerList);
-          writeAdminCache({ banners: bannerList });
-        }, (err) => handleFirestoreError(err, OperationType.LIST, 'banners'))
-      );
+          if (referralSettings) {
+            setAppSettings(referralSettings);
+            writeAdminCache({ appSettings: referralSettings });
+          }
 
-      unsubs.push(
-        onSnapshot(query(collection(db, 'paymentSettings'), limit(15)), (snapshot) => {
-          if (snapshot.metadata.fromCache && snapshot.empty) return;
-          setPaymentGateways(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as PaymentGateway)));
-        }, (err) => handleFirestoreError(err, OperationType.LIST, 'paymentSettings'))
-      );
+          const sortedBanners = [...rawBannersList].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          if (sortedBanners.length > 0 || rawBannersList.length === 0) {
+            setBanners(sortedBanners);
+            writeAdminCache({ banners: sortedBanners });
+          }
 
-      unsubs.push(
-        onSnapshot(doc(db, 'appSettings', 'payment_qr'), (snapshot) => {
-          if (snapshot.exists()) {
-            const data = snapshot.data();
-            const cfg = data.paymentQr || data;
+          setPaymentGateways(gatewaysList);
+
+          if (qrDocData) {
+            const cfg = qrDocData.paymentQr || qrDocData;
             const nextQr = {
               qrImageUrl: cfg.qrImageUrl || '',
-              amountQrs: (cfg.amountQrs && typeof cfg.amountQrs === 'object') ? cfg.amountQrs : {},
+              amountQrs: cfg.amountQrs && typeof cfg.amountQrs === 'object' ? cfg.amountQrs : {},
               upiId: cfg.upiId || '',
               merchantName: cfg.merchantName || 'FX Arena eSport',
-              isActive: cfg.isActive !== false
+              isActive: cfg.isActive !== false,
             };
             setQrForm(nextQr);
             writeAdminCache({ qrForm: nextQr });
           }
-        }, (err) => handleFirestoreError(err, OperationType.GET, 'appSettings/payment_qr'))
-      );
-    }
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+          setIsRefreshing(false);
+        }
+      }
+    };
 
-    setLoading(false);
+    loadAdminData();
     return () => {
-      unsubs.forEach((unsub) => unsub());
+      active = false;
     };
   }, [refreshKey]);
 
@@ -494,6 +555,8 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const handleBanUser = async (userId: string, currentStatus: boolean) => {
     try {
       await updateDoc(doc(db, 'users', userId), { isBanned: !currentStatus });
+      invalidateFirestoreCache('admin_users');
+      setRefreshKey((k) => k + 1);
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `users/${userId}`);
     }
@@ -527,6 +590,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           createdAt: serverTimestamp()
         });
       });
+      invalidateFirestoreCache('admin_users');
+      invalidateFirestoreCache('admin_tx');
+      setRefreshKey((k) => k + 1);
       alert(`Balance ${type}ed successfully`);
     } catch (e: any) {
       alert(e.message || 'Update failed');
@@ -612,6 +678,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
       });
 
       setIsDeleteConfirmOpen({ isOpen: false, matchId: '' });
+      invalidateFirestoreCache('admin_matches');
+      invalidateFirestoreCache('matches_list');
+      invalidateFirestoreCache('admin_users');
+      invalidateFirestoreCache('admin_tx');
+      setRefreshKey((k) => k + 1);
       alert('Match deleted successfully and players refunded (if applicable)');
     } catch (e) {
       console.error("Error during match deletion:", e);
@@ -759,6 +830,12 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
       });
 
       setIsResultModalOpen(false);
+      invalidateFirestoreCache('admin_matches');
+      invalidateFirestoreCache('matches_list');
+      invalidateFirestoreCache('admin_users');
+      invalidateFirestoreCache('admin_tx');
+      invalidateFirestoreCache(`matchResults_${selectedMatchResults.id}`);
+      setRefreshKey((k) => k + 1);
       alert('Results declared successfully! Winning coins credited to players.');
     } catch (e: any) {
       console.error("Error during result submission:", e);
@@ -876,6 +953,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
       setRuleList(finalRules);
       setRuleText(finalRules.join('\n'));
+      invalidateFirestoreCache('admin_gameRules');
+      invalidateFirestoreCache('gameRules_');
+      setRefreshKey((k) => k + 1);
       alert(`Rules for "${activeSectionTitle}" saved successfully!`);
     } catch (e) {
       console.error("Error saving rules:", e);
@@ -958,6 +1038,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
       setRuleText(initialRules.join('\n'));
       setIsAddSectionModalOpen(false);
       setNewSectionForm({ title: '', category: '', template: 'battle_royale' });
+      invalidateFirestoreCache('admin_gameRules');
+      invalidateFirestoreCache('gameRules_');
+      setRefreshKey((k) => k + 1);
       alert(`Section rules for "${newSectionForm.title}" created successfully!`);
     } catch (err) {
       console.error('Failed to create new rule section:', err);
@@ -978,6 +1061,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     try {
       await deleteDoc(doc(db, 'gameRules', secId));
       setActiveRuleTab('battle_royale');
+      invalidateFirestoreCache('admin_gameRules');
+      invalidateFirestoreCache('gameRules_');
+      setRefreshKey((k) => k + 1);
       alert(`Rules for section "${secTitle}" removed.`);
     } catch (err) {
       console.error('Failed to delete section rules:', err);
@@ -1061,6 +1147,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
       setIsDeclareRoomModalOpen(false);
       setSelectedDeclareRoomMatch(null);
+      invalidateFirestoreCache('admin_matches');
+      invalidateFirestoreCache('matches_list');
+      invalidateFirestoreCache('admin_matchCreds');
+      invalidateFirestoreCache(`matchCreds_${matchId}`);
+      setRefreshKey((k) => k + 1);
       alert('Room ID & Password published securely for joined players only!');
     } catch (err: any) {
       console.error('Failed to declare room:', err);
@@ -1095,6 +1186,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         setIsDeclareRoomModalOpen(false);
         setSelectedDeclareRoomMatch(null);
       }
+      invalidateFirestoreCache('admin_matches');
+      invalidateFirestoreCache('matches_list');
+      invalidateFirestoreCache('admin_matchCreds');
+      invalidateFirestoreCache(`matchCreds_${matchId}`);
+      setRefreshKey((k) => k + 1);
       alert('Room credentials cleared successfully.');
     } catch (err: any) {
       console.error('Failed to clear room:', err);
@@ -1126,6 +1222,8 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     setIsProcessing(true);
     try {
       await setDoc(doc(db, 'appSettings', 'referral_support'), data, { merge: true });
+      invalidateFirestoreCache('appSettings_referral_support');
+      setRefreshKey((k) => k + 1);
       alert('Settings updated successfully!');
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, 'appSettings/referral_support');
@@ -1159,6 +1257,8 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           createdAt: serverTimestamp()
         });
       }
+      invalidateFirestoreCache('banners_list');
+      setRefreshKey((k) => k + 1);
       setIsBannerModalOpen(false);
       setEditingBanner(null);
       setImageUrl('');
@@ -1179,6 +1279,8 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     
     try {
       await deleteDoc(doc(db, 'banners', id));
+      invalidateFirestoreCache('banners_list');
+      setRefreshKey((k) => k + 1);
     } catch (e) {
       console.error("Error deleting banner:", e);
       alert('Upload failed, try again');
@@ -1257,6 +1359,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         }, { merge: true });
         await batch.commit();
         setQrForm(prev => ({ ...prev, isActive: false }));
+        invalidateFirestoreCache('admin_paymentSettings');
+        invalidateFirestoreCache('appSettings_payment_qr');
+        setRefreshKey((k) => k + 1);
         setPaymentFeedback({ type: 'success', message: `${targetGateway?.name || gatewayId.toUpperCase()} activated for Add Cash.` });
       } else {
         const batch = writeBatch(db);
@@ -1270,6 +1375,8 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
           updatedAt: serverTimestamp()
         }, { merge: true });
         await batch.commit();
+        invalidateFirestoreCache('admin_paymentSettings');
+        setRefreshKey((k) => k + 1);
         setPaymentFeedback({ type: 'success', message: 'Automatic gateway paused.' });
       }
     } catch (e: any) {
@@ -1332,6 +1439,8 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         upiId: '',
         isProduction: false
       });
+      invalidateFirestoreCache('admin_paymentSettings');
+      setRefreshKey((k) => k + 1);
       setPaymentFeedback({
         type: 'success',
         message: `${gatewayData.name} credentials saved! Toggle its switch ON whenever you want to switch from Manual QR to Automatic Gateway.`
@@ -1459,6 +1568,8 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         paymentQr: qrPayload,
         updatedAt: serverTimestamp()
       }, { merge: true });
+      invalidateFirestoreCache('appSettings_payment_qr');
+      setRefreshKey((k) => k + 1);
       setPaymentFeedback({ type: 'success', message: 'QR Scanner settings saved! Users will now see the QR when clicking Pay with QR Scanner.' });
     } catch (e: any) {
       setPaymentFeedback({ type: 'error', message: e?.message || 'Failed to save QR Scanner settings.' });
@@ -1509,6 +1620,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         transaction.update(txRef, { status: 'completed' });
       });
 
+      invalidateFirestoreCache('admin_tx');
+      invalidateFirestoreCache('admin_users');
+      setRefreshKey((k) => k + 1);
       setPaymentFeedback({ type: 'success', message: `Approved ₹${creditAmount} ${txType} request and credited user wallet.` });
     } catch (e: any) {
       const msg = e?.message || 'Failed to approve transaction';
@@ -1559,6 +1673,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
         transaction.update(txRef, { status: 'failed' });
       });
+      invalidateFirestoreCache('admin_tx');
+      invalidateFirestoreCache('admin_users');
+      setRefreshKey((k) => k + 1);
       setPaymentFeedback({ type: 'success', message: `Rejected ₹${refundAmount} ${txType} request.` });
     } catch (e: any) {
       const msg = e?.message || 'Failed to reject transaction';
@@ -1600,70 +1717,16 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <div
-              className={`w-2 h-2 rounded-full ${
-                dbHealth === 'operational'
-                  ? 'bg-emerald-500 animate-pulse shadow-[0_0_10px_rgba(16,185,129,0.5)]'
-                  : dbHealth === 'offline'
-                  ? 'bg-amber-500'
-                  : 'bg-red-500 animate-pulse'
-              }`}
-            />
-            <span
-              className={`text-[9px] font-black uppercase tracking-widest ${
-                dbHealth === 'operational'
-                  ? 'text-emerald-500'
-                  : dbHealth === 'offline'
-                  ? 'text-amber-400'
-                  : 'text-red-400'
-              }`}
-            >
-              {dbHealth === 'operational'
-                ? 'Live'
-                : dbHealth === 'quota_exceeded'
-                ? 'Quota Limit'
-                : dbHealth === 'offline'
-                ? 'Offline'
-                : 'Auth Issue'}
-            </span>
-          </div>
+          <button
+            type="button"
+            onClick={() => triggerAdminRefresh(true)}
+            disabled={isRefreshing}
+            title="Refresh data"
+            className="p-2.5 bg-neutral-900 border border-neutral-800 rounded-xl text-neutral-400 hover:text-white active:scale-95 transition-all disabled:opacity-60"
+          >
+            <RefreshCw size={16} className={isRefreshing ? 'animate-spin text-purple-400' : ''} />
+          </button>
         </div>
-
-        {dbHealth !== 'operational' && (
-          <div className="mb-6 p-4 rounded-2xl bg-red-500/10 border border-red-500/40 text-red-200 flex items-center justify-between gap-3">
-            <div className="flex items-start gap-2.5 min-w-0">
-              <AlertCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
-              <div className="text-xs leading-snug">
-                <p className="font-black uppercase tracking-wider text-red-300">
-                  {dbHealth === 'quota_exceeded'
-                    ? 'Daily Database Read Quota Reached'
-                    : dbHealth === 'offline'
-                    ? 'Database Connection Offline'
-                    : 'Database Permission Issue'}
-                </p>
-                <p className="text-neutral-300 mt-0.5 text-[11px]">
-                  {dbHealth === 'quota_exceeded'
-                    ? 'Firebase free daily read quota (50k/day) has been exceeded. Cached data is shown until Google resets daily quota (~1:30 PM IST).'
-                    : dbHealth === 'offline'
-                    ? 'Could not reach Cloud Firestore right now. Showing last cached data.'
-                    : 'Verify your admin email or re-login to restore write permissions.'}
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setFirestoreHealth('operational');
-                setRefreshKey((k) => k + 1);
-              }}
-              className="px-3 py-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 shrink-0"
-            >
-              <RefreshCw size={12} />
-              Retry
-            </button>
-          </div>
-        )}
 
         {needsAdminVerification && (
           <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/40 text-amber-200 space-y-2.5">
@@ -1787,29 +1850,6 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                   <Gamepad2 className="text-purple-500" size={32} />
                   <span className="text-[10px] font-black uppercase tracking-widest text-purple-500">Manage Game Modes</span>
                 </button>
-              </div>
-
-              <div className="p-6 bg-neutral-900/60 border border-neutral-800 rounded-3xl mt-4">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-neutral-500 mb-6 flex items-center gap-2">
-                  <Shield size={12} className="text-purple-500" /> System Health
-                </h4>
-                <div className="space-y-4">
-                  <HealthBar
-                    label="Database"
-                    status={
-                      dbHealth === 'operational'
-                        ? 'Operational'
-                        : dbHealth === 'quota_exceeded'
-                        ? 'Quota Exceeded'
-                        : dbHealth === 'offline'
-                        ? 'Offline (Cached)'
-                        : 'Permission Error'
-                    }
-                    tone={dbHealth === 'operational' ? 'ok' : dbHealth === 'offline' ? 'warn' : 'error'}
-                  />
-                  <HealthBar label="Auth Service" status="Operational" tone="ok" />
-                  <HealthBar label="Storage" status="Optimal" tone="ok" />
-                </div>
               </div>
             </motion.div>
           )}
@@ -2208,6 +2248,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                                   }
                                   batch.update(doc(db, 'matches', m.id), updates);
                                   await batch.commit();
+                                  invalidateFirestoreCache('admin_matches');
+                                  invalidateFirestoreCache('matches_list');
+                                  invalidateFirestoreCache('admin_matchCreds');
+                                  invalidateFirestoreCache(`matchCreds_${m.id}`);
+                                  setRefreshKey((k) => k + 1);
                                   alert('Room credentials updated securely for joined players!');
                                 } catch (err: any) {
                                   console.error('Quick save room failed:', err);
@@ -4178,30 +4223,6 @@ function StatCard({ label, value, icon: Icon, color }: any) {
       <Icon size={48} className={`absolute -right-2 -bottom-2 opacity-10 ${color} group-hover:scale-110 transition-transform`} />
       <p className="text-[9px] font-black uppercase tracking-[0.2em] text-neutral-500 relative z-10">{label}</p>
       <p className="text-2xl font-black italic tracking-tighter truncate relative z-10">{value}</p>
-    </div>
-  );
-}
-
-function HealthBar({ label, status, tone = 'ok' }: any) {
-  const textCls =
-    tone === 'error'
-      ? 'text-red-400'
-      : tone === 'warn'
-      ? 'text-amber-400'
-      : 'text-emerald-500';
-  const dotCls =
-    tone === 'error'
-      ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]'
-      : tone === 'warn'
-      ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]'
-      : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]';
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-[10px] font-black uppercase tracking-widest text-neutral-600">{label}</span>
-      <div className="flex items-center gap-2">
-        <span className={`text-[9px] font-black uppercase tracking-widest ${textCls}`}>{status}</span>
-        <div className={`w-1.5 h-1.5 rounded-full ${dotCls}`} />
-      </div>
     </div>
   );
 }

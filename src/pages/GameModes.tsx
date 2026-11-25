@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, Gamepad2, PlayCircle, Star, ShieldCheck, Loader2 } from 'lucide-react';
-import { GAMES } from '../constants';
+import { ChevronLeft, Gamepad2, Star } from 'lucide-react';
+import { GAMES, GAME_MODES_DATA } from '../constants';
 import { Page } from '../types';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import { collection, query, limit } from 'firebase/firestore';
+import { cachedGetDocs } from '../utils/firestoreCache';
 import SafeImage from '../components/SafeImage';
 import { resolveSafeModeImage } from '../utils/assetUrl';
 
@@ -23,34 +24,67 @@ interface GameModesProps {
   onPageChange: (page: Page, id?: string) => void;
 }
 
+function getFallbackModesForGame(gameId?: string): GameMode[] {
+  try {
+    const raw = localStorage.getItem('fxarena_cached_game_modes');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((m: any) => !gameId || (m.gameId || 'freefire') === gameId);
+        if (filtered.length > 0) return filtered;
+      }
+    }
+  } catch {
+    // ignore cache error
+  }
+  const preset = (gameId && GAME_MODES_DATA[gameId]) || GAME_MODES_DATA.freefire || [];
+  return preset.map((m, idx) => ({
+    ...m,
+    gameId: gameId || 'freefire',
+    order: idx + 1,
+  }));
+}
+
 export default function GameModes({ onPageChange }: GameModesProps) {
   const { gameId } = useParams<{ gameId: string }>();
-  const [modes, setModes] = useState<GameMode[]>([]);
-  const [loading, setLoading] = useState(true);
-  
-  const game = GAMES.find(g => g.id === gameId);
+  const [modes, setModes] = useState<GameMode[]>(() => getFallbackModesForGame(gameId));
+  const [loading, setLoading] = useState(() => getFallbackModesForGame(gameId).length === 0);
+
+  const game = GAMES.find((g) => g.id === gameId);
 
   useEffect(() => {
     if (!gameId) return;
-
-    setLoading(true);
-    const q = query(
-      collection(db, 'gameModes'),
-      where('gameId', '==', gameId)
-    );
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedModes = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as GameMode))
-        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
-      setModes(fetchedModes);
+    let active = true;
+    const fallback = getFallbackModesForGame(gameId);
+    if (fallback.length > 0) {
+      setModes(fallback);
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'gameModes');
-      setLoading(false);
-    });
+    }
 
-    return () => unsubscribe();
+    const loadModes = async () => {
+      const allModes = await cachedGetDocs<GameMode>(
+        'gameModes_list',
+        query(collection(db, 'gameModes'), limit(30)),
+        15 * 60_000,
+        { legacyStorageKey: 'fxarena_cached_game_modes', maxPersist: 30, pathLabel: 'gameModes' }
+      );
+      if (!active) return;
+      const filtered = allModes
+        .filter((m) => (m.gameId || 'freefire') === gameId)
+        .sort((a, b) => (Number(a.order) || 999) - (Number(b.order) || 999));
+
+      if (filtered.length > 0) {
+        setModes(filtered);
+      } else {
+        setModes(getFallbackModesForGame(gameId));
+      }
+      setLoading(false);
+    };
+
+    void loadModes();
+    return () => {
+      active = false;
+    };
   }, [gameId]);
 
   if (!game) {
@@ -88,13 +122,9 @@ export default function GameModes({ onPageChange }: GameModesProps) {
             </motion.button>
             
             <div className="text-center">
-              <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-purple-500 mb-1">
+              <h2 className="text-[10px] font-black uppercase tracking-[0.4em] text-purple-500">
                 {game ? `${game.title} ARENA`.toUpperCase() : 'GAMING ARENA'}
               </h2>
-              <div className="flex items-center justify-center gap-1.5">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-                <span className="text-[8px] font-black uppercase tracking-widest text-emerald-500/80">Servers Optimal</span>
-              </div>
             </div>
 
             <div className="w-10" /> {/* Spacer */}

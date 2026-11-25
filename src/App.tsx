@@ -7,7 +7,7 @@ import Header from './components/Header';
 import BottomNav from './components/BottomNav';
 import { auth, db, handleFirestoreError, setFirestoreHealth, getFirestoreHealth, OperationType } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs, writeBatch, onSnapshot, increment, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs, writeBatch, onSnapshot, increment, updateDoc, limit } from 'firebase/firestore';
 import { GAMES, GAME_MODES_DATA } from './constants';
 import { isAuthorizedAdmin, hasControlPanelAccess, STAFF_EMAILS } from './utils/adminAuth';
 import { WELCOME_SPLASH_URL, resolveSafeModeImage } from './utils/assetUrl';
@@ -623,7 +623,7 @@ export default function App() {
           setLoading(false);
         });
 
-        const regQuery = query(collection(db, 'registrations'), where('userId', '==', firebaseUser.uid));
+        const regQuery = query(collection(db, 'registrations'), where('userId', '==', firebaseUser.uid), limit(50));
         unsubscribeRegistrations = onSnapshot(
           regQuery,
           (regSnap) => {

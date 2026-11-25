@@ -11,13 +11,12 @@ import {
   collection, 
   query, 
   where, 
-  orderBy, 
   limit, 
   getDocs,
   serverTimestamp,
-  addDoc,
   writeBatch
 } from 'firebase/firestore';
+import { invalidateFirestoreCache } from '../utils/firestoreCache';
 import { ChevronLeft, Shield, ShieldAlert, Wallet as WalletIcon, Trophy, History, Plus, Minus, User as UserIcon, Mail, Phone } from 'lucide-react';
 
 interface AdminUserDetailProps {
@@ -53,36 +52,44 @@ export default function AdminUserDetail({ onPageChange }: AdminUserDetailProps) 
       setLoading(false);
     });
 
-    // Transactions
-    const qTransactions = query(
-      collection(db, 'transactions'),
-      where('userId', '==', userId)
-    );
+    // Transactions (bounded one-time fetch instead of unbounded real-time listener)
+    const fetchUserTransactions = async () => {
+      try {
+        const qTransactions = query(
+          collection(db, 'transactions'),
+          where('userId', '==', userId),
+          limit(30)
+        );
+        const snapshot = await getDocs(qTransactions);
+        const toMillis = (val: any) => {
+          if (!val) return 0;
+          if (typeof val?.toMillis === 'function') return val.toMillis();
+          if (typeof val?.seconds === 'number') return val.seconds * 1000;
+          const t = new Date(val).getTime();
+          return isNaN(t) ? 0 : t;
+        };
+        const txs = snapshot.docs
+          .map(d => ({ id: d.id, ...d.data() } as Transaction))
+          .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt))
+          .slice(0, 20);
+        setTransactions(txs);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, 'transactions');
+      }
+    };
 
-    const unsubscribeTransactions = onSnapshot(qTransactions, (snapshot) => {
-      const toMillis = (val: any) => {
-        if (!val) return 0;
-        if (typeof val?.toMillis === 'function') return val.toMillis();
-        if (typeof val?.seconds === 'number') return val.seconds * 1000;
-        const t = new Date(val).getTime();
-        return isNaN(t) ? 0 : t;
-      };
-      const txs = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as Transaction))
-        .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt))
-        .slice(0, 20);
-      setTransactions(txs);
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'transactions'));
-
-    // Joined Matches
+    // Joined Matches (bounded)
     const fetchMatches = async () => {
       try {
-        const qReg = query(collection(db, 'registrations'), where('userId', '==', userId));
+        const qReg = query(
+          collection(db, 'registrations'),
+          where('userId', '==', userId),
+          limit(30)
+        );
         const regSnap = await getDocs(qReg);
-        const matchIds = regSnap.docs.map(d => d.data().tournamentId);
+        const matchIds = regSnap.docs.map(d => d.data().tournamentId).filter(Boolean);
         
         if (matchIds.length > 0) {
-          // Use documentId() 'in' for better performance (limit 30)
           const qMatches = query(
             collection(db, 'matches'), 
             where('__name__', 'in', matchIds.slice(0, 30))
@@ -96,11 +103,11 @@ export default function AdminUserDetail({ onPageChange }: AdminUserDetailProps) 
       }
     };
 
+    fetchUserTransactions();
     fetchMatches();
 
     return () => {
       unsubscribeUser();
-      unsubscribeTransactions();
     };
   }, [userId]);
 
@@ -112,6 +119,7 @@ export default function AdminUserDetail({ onPageChange }: AdminUserDetailProps) 
         await updateDoc(doc(db, 'users', userId), {
           isBanned: newBanStatus
         });
+        invalidateFirestoreCache('admin_users');
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
       }
@@ -136,16 +144,31 @@ export default function AdminUserDetail({ onPageChange }: AdminUserDetailProps) 
 
       // Add transaction record
       const txRef = doc(collection(db, 'transactions'));
+      const newTxTitle = reason || `Admin ${balanceModal.type} balance (${balanceModal.walletType})`;
       batch.set(txRef, {
         userId,
         type: balanceModal.type === 'add' ? 'deposit' : 'withdraw',
         amount: numAmount,
         status: 'completed',
-        title: reason || `Admin ${balanceModal.type} balance (${balanceModal.walletType})`,
+        title: newTxTitle,
         createdAt: serverTimestamp()
       });
 
       await batch.commit();
+      invalidateFirestoreCache('admin_users');
+      invalidateFirestoreCache('admin_tx');
+      setTransactions((prev) => [
+        {
+          id: txRef.id,
+          userId,
+          type: balanceModal.type === 'add' ? 'deposit' : 'withdraw',
+          amount: numAmount,
+          status: 'completed',
+          title: newTxTitle,
+          createdAt: { toDate: () => new Date() },
+        } as unknown as Transaction,
+        ...prev.slice(0, 19),
+      ]);
       setBalanceModal(null);
       setAmount('');
       setReason('');

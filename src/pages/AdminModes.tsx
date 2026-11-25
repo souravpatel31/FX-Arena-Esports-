@@ -6,13 +6,14 @@ import {
   Sparkles, Check, RefreshCw
 } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, getDocs, setDoc, doc, deleteDoc, onSnapshot, orderBy, writeBatch } from 'firebase/firestore';
+import { collection, query, setDoc, doc, deleteDoc, writeBatch, limit } from 'firebase/firestore';
 import { Page } from '../types';
 import { GAMES } from '../constants';
 import SafeImage from '../components/SafeImage';
 import { uploadOriginalImage } from '../utils/imageCompressor';
 import { isAuthorizedAdmin } from '../utils/adminAuth';
-import { MODE_BR_URL, MODE_CS_URL, MODE_LW_URL, resolveSafeModeImage } from '../utils/assetUrl';
+import { MODE_BR_URL, MODE_CS_URL, MODE_LW_URL } from '../utils/assetUrl';
+import { cachedGetDocs, invalidateFirestoreCache } from '../utils/firestoreCache';
 
 export interface GameMode {
   id: string;
@@ -92,6 +93,7 @@ export default function AdminModes({ onPageChange }: AdminModesProps) {
   const [isSeeding, setIsSeeding] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
+  const [refreshTick, setRefreshTick] = useState(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Mode Image Upload (100% Original Quality, No Compression)
@@ -122,21 +124,31 @@ export default function AdminModes({ onPageChange }: AdminModesProps) {
       return;
     }
 
-    setLoading(true);
-    const q = query(collection(db, 'gameModes'), orderBy('order', 'asc'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allModes = snapshot.docs.map(docSnap => ({ ...docSnap.data() } as GameMode));
-      const filtered = allModes.filter(m => m.gameId === selectedGameId);
-      setModes(filtered);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'gameModes');
-      setLoading(false);
-    });
+    let active = true;
+    const loadModes = async () => {
+      setLoading(true);
+      try {
+        const allModes = await cachedGetDocs<GameMode>(
+          'gameModes_list',
+          query(collection(db, 'gameModes'), limit(30)),
+          15 * 60_000,
+          { pathLabel: 'gameModes', legacyStorageKey: 'fxarena_cached_game_modes' }
+        );
+        if (!active) return;
+        const filtered = allModes
+          .filter(m => m.gameId === selectedGameId)
+          .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+        setModes(filtered);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
 
-    return () => unsubscribe();
-  }, [selectedGameId]);
+    loadModes();
+    return () => {
+      active = false;
+    };
+  }, [selectedGameId, refreshTick]);
 
   // Quick Seed Default Modes for this Game
   const handleSeedDefaults = async () => {
@@ -154,6 +166,8 @@ export default function AdminModes({ onPageChange }: AdminModesProps) {
         }, { merge: true });
       });
       await batch.commit();
+      invalidateFirestoreCache('gameModes_list');
+      setRefreshTick((t) => t + 1);
       alert('Preset game modes added successfully!');
     } catch (err) {
       console.error("Error seeding modes:", err);
@@ -243,6 +257,14 @@ export default function AdminModes({ onPageChange }: AdminModesProps) {
       };
 
       await setDoc(doc(db, 'gameModes', modeId), modeData, { merge: true });
+      invalidateFirestoreCache('gameModes_list');
+      setModes((prev) => {
+        const exists = prev.some((m) => m.id === modeData.id);
+        const next = exists
+          ? prev.map((m) => (m.id === modeData.id ? modeData : m))
+          : [...prev, modeData];
+        return [...next].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+      });
       setEditingMode(null);
     } catch (error) {
       console.error("Error saving mode:", error);
@@ -258,6 +280,8 @@ export default function AdminModes({ onPageChange }: AdminModesProps) {
     setIsDeleting(true);
     try {
       await deleteDoc(doc(db, 'gameModes', `${selectedGameId}_${modeToDelete.id}`));
+      invalidateFirestoreCache('gameModes_list');
+      setModes((prev) => prev.filter((m) => m.id !== modeToDelete.id));
       setModeToDelete(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, 'gameModes');

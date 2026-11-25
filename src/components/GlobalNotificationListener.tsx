@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Bell, X, Key, Trophy, Gift, ShieldCheck, Zap, Wallet, ChevronRight, CheckCircle2, Smartphone } from 'lucide-react';
-import { db, handleFirestoreError, getFirestoreHealth, OperationType } from '../lib/firebase';
-import { collection, onSnapshot, query, orderBy, limit, doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { db, getFirestoreHealth } from '../lib/firebase';
+import { doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { subscribeSharedNotifications } from '../utils/firestoreCache';
 import { Page, AppNotification, User } from '../types';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
@@ -140,65 +141,51 @@ export default function GlobalNotificationListener({
     });
   }, [user?.id, user?.fcmEnabled, user?.notificationsEnabled]);
 
-  // Listen to Firestore notifications in real-time
+  // Listen to shared Firestore notifications stream (single listener across app)
   useEffect(() => {
     if (!user?.id) return;
 
-    const q = query(
-      collection(db, 'notifications'),
-      orderBy('createdAt', 'desc'),
-      limit(10)
-    );
-
-    const unsub = onSnapshot(q, (snapshot) => {
+    const unsub = subscribeSharedNotifications(user.id, (list) => {
       if (!initialLoadDone.current) {
-        // Populate initial existing IDs so we don't spam on initial load
-        snapshot.docs.forEach((d) => seenNotifIds.current.add(d.id));
+        list.forEach((d) => {
+          if (d.id) seenNotifIds.current.add(d.id);
+        });
         initialLoadDone.current = true;
         return;
       }
 
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const notifId = change.doc.id;
-          if (seenNotifIds.current.has(notifId)) return;
-          seenNotifIds.current.add(notifId);
+      list.forEach((data) => {
+        const notifId = data.id;
+        if (!notifId || seenNotifIds.current.has(notifId)) return;
+        seenNotifIds.current.add(notifId);
 
-          const data = { id: notifId, ...change.doc.data() } as AppNotification;
+        // Strict audience check: match alerts go ONLY to players who joined that match
+        let isForUser = false;
+        if (!data.audience || data.audience === 'all') {
+          isForUser = true;
+        } else if (data.audience === 'match') {
+          isForUser = Boolean(data.targetMatchId && joinedMatchIds.includes(data.targetMatchId));
+        } else if (data.audience === 'user') {
+          isForUser = Boolean(data.targetUserId && user?.id === data.targetUserId);
+        }
 
-          // Strict audience check: match alerts go ONLY to players who joined that match
-          let isForUser = false;
-          if (!data.audience || data.audience === 'all') {
-            isForUser = true;
-          } else if (data.audience === 'match') {
-            isForUser = Boolean(data.targetMatchId && joinedMatchIds.includes(data.targetMatchId));
-          } else if (data.audience === 'user') {
-            isForUser = Boolean(data.targetUserId && user?.id === data.targetUserId);
-          }
+        if (isForUser) {
+          setActivePopup(data);
+          playAlertSound();
 
-          if (isForUser) {
-            // 1. In-app floating popup
-            setActivePopup(data);
-            playAlertSound();
+          triggerMobileStatusBarNotification(data.title, data.message, {
+            tag: data.id || 'fx-arena-alert',
+            targetMatchId: data.targetMatchId,
+            actionPage: data.actionPage,
+            icon: APP_LOGO_URL,
+            badge: APP_LOGO_URL
+          });
 
-            // 2. TRIGGER NATIVE MOBILE STATUS BAR NOTIFICATION
-            triggerMobileStatusBarNotification(data.title, data.message, {
-              tag: data.id || 'fx-arena-alert',
-              targetMatchId: data.targetMatchId,
-              actionPage: data.actionPage,
-              icon: APP_LOGO_URL,
-              badge: APP_LOGO_URL
-            });
-
-            // Auto dismiss in-app popup after 6.5s
-            setTimeout(() => {
-              setActivePopup((curr) => (curr?.id === notifId ? null : curr));
-            }, 6500);
-          }
+          setTimeout(() => {
+            setActivePopup((curr) => (curr?.id === notifId ? null : curr));
+          }, 6500);
         }
       });
-    }, (err) => {
-      handleFirestoreError(err, OperationType.LIST, 'notifications');
     });
 
     return () => unsub();

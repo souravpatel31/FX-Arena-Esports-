@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Shield, Star, Sword, Target, Loader2 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+import { cachedGetDoc } from '../utils/firestoreCache';
 
 interface RulesModalProps {
   isOpen: boolean;
@@ -48,28 +49,37 @@ export default function RulesModal({ isOpen, onClose, section, onJoin, isJoined 
           const s = (section || 'Battle Royale').toLowerCase().trim();
           const normKey = normalizeSectionKey(s);
 
-          // 1. Try exact sanitized ID
-          let docSnap = await getDoc(doc(db, 'gameRules', normKey));
+          // 1. Try exact sanitized ID via cache
+          let ruleDoc = await cachedGetDoc<{ rules?: string[] }>(
+            `gameRule_${normKey}`,
+            doc(db, 'gameRules', normKey),
+            15 * 60_000,
+            { pathLabel: `gameRules/${normKey}` }
+          );
 
-          // 2. Fallback to common aliases
-          if (!docSnap.exists()) {
-            if (s.includes('clash') || s.includes('cs') || s.includes('4v4')) {
-              docSnap = await getDoc(doc(db, 'gameRules', 'clash_squad'));
-            } else if (s.includes('lone') || s.includes('wolf') || s.includes('1v1') || s.includes('2v2')) {
-              docSnap = await getDoc(doc(db, 'gameRules', 'lone_wolf'));
-            } else if (s.includes('sniper')) {
-              docSnap = await getDoc(doc(db, 'gameRules', 'sniper_only'));
-            } else if (s.includes('custom')) {
-              docSnap = await getDoc(doc(db, 'gameRules', 'custom_room'));
-            } else {
-              docSnap = await getDoc(doc(db, 'gameRules', 'battle_royale'));
-            }
+          // 2. Fallback to common aliases via cache
+          if (!ruleDoc?.rules?.length) {
+            const aliasKey =
+              s.includes('clash') || s.includes('cs') || s.includes('4v4')
+                ? 'clash_squad'
+                : s.includes('lone') || s.includes('wolf') || s.includes('1v1') || s.includes('2v2')
+                ? 'lone_wolf'
+                : s.includes('sniper')
+                ? 'sniper_only'
+                : s.includes('custom')
+                ? 'custom_room'
+                : 'battle_royale';
+            ruleDoc = await cachedGetDoc<{ rules?: string[] }>(
+              `gameRule_${aliasKey}`,
+              doc(db, 'gameRules', aliasKey),
+              15 * 60_000,
+              { pathLabel: `gameRules/${aliasKey}` }
+            );
           }
 
-          if (docSnap.exists() && docSnap.data().rules && docSnap.data().rules.length > 0) {
-            setRules(docSnap.data().rules);
+          if (ruleDoc?.rules && ruleDoc.rules.length > 0) {
+            setRules(ruleDoc.rules);
           } else {
-            // Fallback rules if doc doesn't exist yet
             setRules([
               'Fair Play: No hacking, scripts or third-party tools allowed.',
               'Device Requirements: Mobile and Tablet players only. Strictly no emulators.',
@@ -91,7 +101,7 @@ export default function RulesModal({ isOpen, onClose, section, onJoin, isJoined 
           setLoading(false);
         }
       };
-      fetchRules();
+      void fetchRules();
     }
   }, [isOpen, section]);
 

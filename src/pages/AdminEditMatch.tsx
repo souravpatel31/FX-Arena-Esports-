@@ -8,10 +8,11 @@ import {
 import { Page, Tournament } from '../types';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { sendEmailVerification } from 'firebase/auth';
-import { doc, getDoc, updateDoc, serverTimestamp, getDocs, collection, query, orderBy } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, serverTimestamp, collection, query, limit } from 'firebase/firestore';
 import { GameMode } from './AdminModes';
 import { uploadOriginalImage, compactImageForFirestore } from '../utils/imageCompressor';
 import { hasControlPanelAccess, isStaffUser } from '../utils/adminAuth';
+import { cachedGetDocs, invalidateFirestoreCache } from '../utils/firestoreCache';
 
 interface AdminEditMatchProps {
   onPageChange: (page: Page) => void;
@@ -96,19 +97,22 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
     'freefire': ['Bermuda', 'Purgatory', 'Kalahari', 'Alpine', 'NeXTerra', 'Bermuda Remastered']
   };
 
-  // Fetch Dynamic Game Modes from Firestore
+  // Fetch Dynamic Game Modes from Firestore (shared cache)
   useEffect(() => {
     const fetchGameModes = async () => {
       setLoadingModes(true);
       try {
-        const q = query(collection(db, 'gameModes'), orderBy('order', 'asc'));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          const list = snap.docs.map(d => ({ ...d.data() }) as GameMode);
-          const filtered = list.filter(m => !matchForm.gameId || m.gameId === matchForm.gameId);
-          if (filtered.length > 0) {
-            setAvailableModes(filtered);
-          }
+        const list = await cachedGetDocs<GameMode>(
+          'gameModes_list',
+          query(collection(db, 'gameModes'), limit(30)),
+          15 * 60_000,
+          { pathLabel: 'gameModes', legacyStorageKey: 'fxarena_cached_game_modes' }
+        );
+        const filtered = list
+          .filter(m => !matchForm.gameId || m.gameId === matchForm.gameId)
+          .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+        if (filtered.length > 0) {
+          setAvailableModes(filtered);
         }
       } catch (err) {
         console.warn('Could not fetch custom game modes, using presets:', err);
@@ -152,40 +156,56 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
       return;
     }
 
+    const applyMatchData = (data: Tournament) => {
+      setMatchForm({
+        title: data.title || '',
+        gameId: data.gameId || 'freefire',
+        selectedModeDocId: data.modeId || 'br_solo',
+        modeId: data.modeId || 'br_solo',
+        image: data.image || '',
+        entryFee: data.entryFee || 0,
+        prize: data.prize || '',
+        prizePool: data.prizePool || 0,
+        maxPlayers: data.maxPlayers || 48,
+        totalSlots: data.totalSlots || 48,
+        time: data.time || '',
+        map: data.map || '',
+        mode: data.mode || 'Solo',
+        section: data.section || 'Battle Royale',
+        prizeType: data.prizeType || 'survival',
+        perKillAmount: data.perKillAmount || 0,
+        winnersCount: data.winnersCount || 1,
+        prizeDistribution: data.prizeDistribution || {},
+        positionWinnersCount: data.positionWinnersCount || 0,
+        positionPrizeDistribution: data.positionPrizeDistribution || {}
+      });
+    };
+
     const fetchMatch = async () => {
       try {
         const matchDoc = await getDoc(doc(db, 'matches', matchId));
         if (matchDoc.exists()) {
-          const data = matchDoc.data() as Tournament;
-          setMatchForm({
-            title: data.title || '',
-            gameId: data.gameId || 'freefire',
-            selectedModeDocId: data.modeId || 'br_solo',
-            modeId: data.modeId || 'br_solo',
-            image: data.image || '',
-            entryFee: data.entryFee || 0,
-            prize: data.prize || '',
-            prizePool: data.prizePool || 0,
-            maxPlayers: data.maxPlayers || 48,
-            totalSlots: data.totalSlots || 48,
-            time: data.time || '',
-            map: data.map || '',
-            mode: data.mode || 'Solo',
-            section: data.section || 'Battle Royale',
-            prizeType: data.prizeType || 'survival',
-            perKillAmount: data.perKillAmount || 0,
-            winnersCount: data.winnersCount || 1,
-            prizeDistribution: data.prizeDistribution || {},
-            positionWinnersCount: data.positionWinnersCount || 0,
-            positionPrizeDistribution: data.positionPrizeDistribution || {}
-          });
+          applyMatchData(matchDoc.data() as Tournament);
         } else {
-          alert('Match not found');
+          setFormError('Match not found.');
           onPageChange(Page.ADMIN);
         }
       } catch (e) {
         console.error('Error fetching match:', e);
         handleFirestoreError(e, OperationType.GET, `matches/${matchId}`);
+        try {
+          const raw = localStorage.getItem('fxarena_cached_matches');
+          if (raw) {
+            const parsed = JSON.parse(raw) as Tournament[];
+            const cached = parsed.find((m) => m.id === matchId);
+            if (cached) {
+              applyMatchData(cached);
+              return;
+            }
+          }
+        } catch {
+          // ignore
+        }
       } finally {
         setLoading(false);
       }
@@ -411,6 +431,8 @@ export default function AdminEditMatch({ onPageChange }: AdminEditMatchProps) {
       }
 
       await updateDoc(matchRef, updateData);
+      invalidateFirestoreCache('admin_matches');
+      invalidateFirestoreCache('matches_list');
       alert('Match updated successfully!');
       onPageChange(Page.ADMIN);
     } catch (e: any) {

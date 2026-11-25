@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MessageSquare, Send, Mail, X, ExternalLink, ShieldCheck, ChevronRight, Loader2 } from 'lucide-react';
 import { db } from '../lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc } from 'firebase/firestore';
+import { cachedGetDoc } from '../utils/firestoreCache';
 
 interface SupportModalProps {
   isOpen: boolean;
@@ -17,17 +18,22 @@ export default function SupportModal({ isOpen, onClose }: SupportModalProps) {
     if (isOpen) {
       const fetchSettings = async () => {
         try {
-          const snap = await getDoc(doc(db, 'appSettings', 'referral_support'));
-          if (snap.exists()) {
-            setSettings(snap.data().support);
+          const data = await cachedGetDoc<any>(
+            'appSettings_referral_support',
+            doc(db, 'appSettings', 'referral_support'),
+            15 * 60_000,
+            { pathLabel: 'appSettings/referral_support' }
+          );
+          if (data?.support) {
+            setSettings(data.support);
           }
-        } catch (e) {
-          console.error(e);
+        } catch {
+          // fallback defaults used cleanly
         } finally {
           setLoading(false);
         }
       };
-      fetchSettings();
+      void fetchSettings();
     }
   }, [isOpen]);
 
@@ -87,14 +93,6 @@ export default function SupportModal({ isOpen, onClose }: SupportModalProps) {
              </div>
 
              <div className="overflow-y-auto no-scrollbar space-y-6">
-                {/* Status Card */}
-                <div className="p-4 bg-emerald-500/5 border border-emerald-500/10 rounded-2xl flex items-center justify-between">
-                   <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-[9px] font-black uppercase tracking-widest text-emerald-500">System Status: Operational</span>
-                   </div>
-                   <ShieldCheck size={14} className="text-emerald-500/30" />
-                </div>
 
                 {loading ? (
                   <div className="py-20 flex flex-col items-center justify-center">

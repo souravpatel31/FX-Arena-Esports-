@@ -14,6 +14,7 @@ import {
   updateDoc,
   runTransaction
 } from 'firebase/firestore';
+import { invalidateFirestoreCache } from '../utils/firestoreCache';
 
 interface JoinMatchProps {
   user: UserType;
@@ -63,6 +64,22 @@ function WalletIllustration() {
   );
 }
 
+function readCachedMatch(matchId?: string): Tournament | null {
+  if (!matchId) return null;
+  try {
+    const raw = localStorage.getItem('fxarena_cached_matches');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return (parsed.find((m: any) => m?.id === matchId) as Tournament) || null;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSuccess }: JoinMatchProps) {
   const { id: matchId } = useParams();
   const isJoined = matchId ? joinedMatchIds.includes(matchId) : false;
@@ -80,8 +97,11 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
   const [teammateIGNs, setTeammateIGNs] = useState<string[]>(['', '', '']); // For multi-slot/teammates
 
   const [loading, setLoading] = useState(false);
-  const [matchData, setMatchData] = useState<Tournament | null>(null);
-  const [takenSlots, setTakenSlots] = useState<number[]>([]);
+  const [matchData, setMatchData] = useState<Tournament | null>(() => readCachedMatch(matchId));
+  const [takenSlots, setTakenSlots] = useState<number[]>(() => {
+    const cached = readCachedMatch(matchId);
+    return cached?.players ? (cached.players as any[]).map((p: any) => p.slot) : [];
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Determine game key for IGN retrieval
@@ -183,7 +203,7 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
   const handleSaveIgnModal = async () => {
     const trimmed = tempIgn.trim();
     if (!trimmed) {
-      alert('Please enter a valid in-game name');
+      setErrorMessage('Please enter a valid in-game name.');
       return;
     }
 
@@ -231,7 +251,7 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
     }
 
     if (isUserJoined) {
-      alert('You have already joined this match!');
+      setErrorMessage('You have already joined this match!');
       return;
     }
 
@@ -386,6 +406,8 @@ export default function JoinMatch({ user, onPageChange, joinedMatchIds, onJoinSu
         }
       });
 
+      invalidateFirestoreCache('matches_list');
+      invalidateFirestoreCache('admin_matches');
       onJoinSuccess(matchId);
       setShowSuccessModal(true);
       setCurrentStep('summary');

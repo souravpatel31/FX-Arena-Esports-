@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Coins, Bell } from 'lucide-react';
 import { Page, User } from '../types';
-import { db } from '../lib/firebase';
-import { collection, onSnapshot, query, limit } from 'firebase/firestore';
 import { APP_LOGO_URL } from '../utils/assetUrl';
+import { subscribeSharedNotifications } from '../utils/firestoreCache';
 
 interface HomeHeaderProps {
   user: User | null;
@@ -18,22 +17,14 @@ export default function HomeHeader({ user, onPageChange, onOpenNotifications }: 
 
   useEffect(() => {
     if (!user?.id) return;
-    const q = query(collection(db, 'notifications'), limit(15));
-    const unsub = onSnapshot(q, (snapshot) => {
-      if (!user?.id) {
-        setUnreadCount(snapshot.size);
-        return;
-      }
+    const unsub = subscribeSharedNotifications(user.id, (list) => {
       let unread = 0;
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data();
-        if (!data.readBy || !data.readBy.includes(user.id)) {
+      list.slice(0, 15).forEach((data) => {
+        if (!data.readBy || !data.readBy.includes(user.id!)) {
           unread++;
         }
       });
       setUnreadCount(unread);
-    }, (err) => {
-      // ignore
     });
 
     return () => unsub();

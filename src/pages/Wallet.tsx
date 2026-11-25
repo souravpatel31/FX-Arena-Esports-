@@ -25,9 +25,23 @@ interface WalletPageProps {
   onPageChange: (page: Page) => void;
 }
 
+function readCachedWalletTx(uid?: string): Transaction[] {
+  if (!uid) return [];
+  try {
+    const raw = localStorage.getItem(`fxarena_cached_wallet_tx_${uid}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as Transaction[];
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
 export default function WalletPage({ user, onPageChange }: WalletPageProps) {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [transactions, setTransactions] = useState<Transaction[]>(() => readCachedWalletTx(auth.currentUser?.uid));
+  const [loading, setLoading] = useState(() => readCachedWalletTx(auth.currentUser?.uid).length === 0);
   const [verifyingOrder, setVerifyingOrder] = useState<string | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<'success' | 'failed' | 'timeout' | null>(null);
   const [showStatementModal, setShowStatementModal] = useState(false);
@@ -56,12 +70,18 @@ export default function WalletPage({ user, onPageChange }: WalletPageProps) {
 
     if (!auth.currentUser) return;
 
+    const uid = auth.currentUser.uid;
     const q = query(
       collection(db, 'transactions'),
-      where('userId', '==', auth.currentUser.uid)
+      where('userId', '==', uid),
+      limit(40)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (snapshot.empty && snapshot.metadata.fromCache) {
+        setLoading(false);
+        return;
+      }
       const toMillis = (val: any) => {
         if (!val) return 0;
         if (typeof val?.toMillis === 'function') return val.toMillis();
@@ -74,6 +94,11 @@ export default function WalletPage({ user, onPageChange }: WalletPageProps) {
         .sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt))
         .slice(0, 30);
       setTransactions(txs);
+      try {
+        localStorage.setItem(`fxarena_cached_wallet_tx_${uid}`, JSON.stringify(txs));
+      } catch {
+        // ignore
+      }
       setLoading(false);
       
       if (verifyingOrder) {
@@ -141,9 +166,8 @@ export default function WalletPage({ user, onPageChange }: WalletPageProps) {
             <div>
               <div className="flex items-center gap-1.5">
                 <span className="text-[9px] font-extrabold uppercase tracking-widest text-[#667085]">
-                  Server Online
+                  Tournament Wallet
                 </span>
-                <span className="w-2 h-2 rounded-full bg-[#16A34A] animate-pulse" />
               </div>
               <h1 className="text-base sm:text-lg font-black tracking-tight text-[#172033] leading-none mt-0.5">
                 FX ARENA <span className="text-[#7C3AED]">ESPORT</span>

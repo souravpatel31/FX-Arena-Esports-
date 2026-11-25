@@ -262,6 +262,10 @@
       "schema": "AdminRole",
       "description": "Trusted match-staff identities for Staff Control Panel"
     },
+    "/freeMatchStaff/{staffId}": {
+      "schema": "AdminRole",
+      "description": "Trusted free-match staff identities for Free Match Control"
+    },
     "/paymentSettings/{gatewayId}": {
       "schema": "PaymentGateway",
       "description": "Configurations for multiple payment gateways"

@@ -25,7 +25,7 @@ import { Page, User } from '../types';
 import SupportModal from '../components/SupportModal';
 import RulesModal from '../components/RulesModal';
 import MyOrdersModal from '../components/MyOrdersModal';
-import { isAuthorizedAdmin, isStaffUser } from '../utils/adminAuth';
+import { isAuthorizedAdmin, isStaffUser, isFreeMatchStaffUser } from '../utils/adminAuth';
 import { APP_LOGO_URL } from '../utils/assetUrl';
 import { buildAppSharePayload } from '../utils/shareLinks';
 
@@ -108,6 +108,7 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
 
   const isAdminUser = isAuthorizedAdmin(user);
   const isStaffMember = isStaffUser(user);
+  const isFreeMatchStaff = isFreeMatchStaffUser(user);
 
   const totalBalance =
     (user?.wallet?.deposit || 0) + (user?.wallet?.winnings || 0) + (user?.wallet?.bonus || 0);
@@ -454,6 +455,24 @@ export default function ProfilePage({ user, onPageChange, onLogout }: ProfilePag
                 </span>
               </div>
               <ChevronRight size={18} className="text-purple-600 group-hover:translate-x-0.5 transition-transform" />
+            </button>
+          )}
+
+          {/* Card 10c: Free Match Control (for free match staff account) */}
+          {isFreeMatchStaff && (
+            <button
+              onClick={() => onPageChange(Page.ADMIN)}
+              className="w-full bg-emerald-50/80 hover:bg-emerald-100/80 active:bg-emerald-200/80 rounded-xl sm:rounded-2xl px-4 py-3.5 flex items-center justify-between border border-emerald-200 shadow-xs group transition-all"
+            >
+              <div className="flex items-center gap-3.5">
+                <div className="text-emerald-600">
+                  <Gamepad2 size={20} className="stroke-[2.2]" />
+                </div>
+                <span className="text-sm font-bold text-emerald-900 tracking-tight">
+                  Free Match Control
+                </span>
+              </div>
+              <ChevronRight size={18} className="text-emerald-600 group-hover:translate-x-0.5 transition-transform" />
             </button>
           )}
 

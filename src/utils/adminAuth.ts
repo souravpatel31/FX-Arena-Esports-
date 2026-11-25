@@ -11,6 +11,10 @@ export const STAFF_EMAILS = [
   'adminrushxesports@gmail.com',
 ];
 
+export const FREE_MATCH_STAFF_EMAILS = [
+  'abhik7772374@gmail.com',
+];
+
 export function isAuthorizedAdmin(
   account?: { email?: string | null; id?: string; uid?: string } | null
 ): boolean {
@@ -28,8 +32,20 @@ export function isStaffUser(
   return STAFF_EMAILS.includes(email) && !isAuthorizedAdmin(account);
 }
 
+export function isFreeMatchStaffUser(
+  account?: { email?: string | null; id?: string; uid?: string } | null
+): boolean {
+  if (!account) return false;
+  const email = (account.email || '').toLowerCase().trim();
+  return (
+    FREE_MATCH_STAFF_EMAILS.includes(email) &&
+    !isAuthorizedAdmin(account) &&
+    !isStaffUser(account)
+  );
+}
+
 export function hasControlPanelAccess(
   account?: { email?: string | null; id?: string; uid?: string } | null
 ): boolean {
-  return isAuthorizedAdmin(account) || isStaffUser(account);
+  return isAuthorizedAdmin(account) || isStaffUser(account) || isFreeMatchStaffUser(account);
 }

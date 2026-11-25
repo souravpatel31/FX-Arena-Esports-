@@ -4,6 +4,7 @@ import { MessageSquare, Send, Mail, X, ExternalLink, ShieldCheck, ChevronRight, 
 import { db } from '../lib/firebase';
 import { doc } from 'firebase/firestore';
 import { cachedGetDoc } from '../utils/firestoreCache';
+import { useModalBackHandler } from '../hooks/useModalBackHandler';
 
 interface SupportModalProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface SupportModalProps {
 }
 
 export default function SupportModal({ isOpen, onClose }: SupportModalProps) {
+  useModalBackHandler(isOpen, onClose);
   const [settings, setSettings] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 

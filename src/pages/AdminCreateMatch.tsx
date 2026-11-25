@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { 
   ArrowLeft, Plus, Loader2, Gamepad2, Map as MapIcon, 
   Users as UsersIcon, Clock, DollarSign, Trophy, Sparkles, Layers, ChevronDown,
@@ -12,7 +12,7 @@ import { sendEmailVerification } from 'firebase/auth';
 import { collection, doc, getDoc, serverTimestamp, runTransaction, query, limit } from 'firebase/firestore';
 import { GameMode } from './AdminModes';
 import { uploadOriginalImage, compactImageForFirestore } from '../utils/imageCompressor';
-import { hasControlPanelAccess, isStaffUser } from '../utils/adminAuth';
+import { hasControlPanelAccess, isStaffUser, isFreeMatchStaffUser } from '../utils/adminAuth';
 import { cachedGetDocs, invalidateFirestoreCache } from '../utils/firestoreCache';
 
 function getDefaultMatchDateTime(): string {
@@ -68,6 +68,9 @@ const PRESET_MATCH_THUMBNAILS = [
 
 export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps) {
   const { duplicateId } = useParams();
+  const [searchParams] = useSearchParams();
+  const preselectedModeId = searchParams.get('modeId');
+  const preselectAppliedRef = useRef(false);
   const [loading, setLoading] = useState(duplicateId ? true : false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [availableModes, setAvailableModes] = useState<GameMode[]>(DEFAULT_MODES_FALLBACK);
@@ -79,6 +82,7 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
   const [verificationFeedback, setVerificationFeedback] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const isFreeMatchRole = isFreeMatchStaffUser(auth.currentUser);
   const [matchForm, setMatchForm] = useState({
     title: '',
     gameId: 'freefire',
@@ -88,7 +92,7 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
     section: 'Battle Royale',
     image: '',
     map: 'Bermuda',
-    entryFee: 10,
+    entryFee: isFreeMatchStaffUser(auth.currentUser) ? 0 : 10,
     prize: '₹300',
     prizePool: 300,
     maxPlayers: 48,
@@ -121,7 +125,10 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
         return;
       }
       try {
-        if (isStaffUser(currentUser)) {
+        if (isFreeMatchStaffUser(currentUser)) {
+          const freeSnap = await getDoc(doc(db, 'freeMatchStaff', currentUser.uid));
+          setNeedsVerification(!freeSnap.exists());
+        } else if (isStaffUser(currentUser)) {
           const staffSnap = await getDoc(doc(db, 'staff', currentUser.uid));
           setNeedsVerification(!staffSnap.exists());
         } else {
@@ -157,6 +164,18 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
 
     fetchGameModes();
   }, [matchForm.gameId]);
+
+  useEffect(() => {
+    if (!duplicateId && preselectedModeId && availableModes.length > 0 && !preselectAppliedRef.current) {
+      const matched = availableModes.find(
+        (m) => m.id === preselectedModeId || `${m.gameId}_${m.id}` === preselectedModeId
+      );
+      if (matched) {
+        preselectAppliedRef.current = true;
+        handleSelectGameMode(matched.id);
+      }
+    }
+  }, [duplicateId, preselectedModeId, availableModes]);
 
   // Handle Duplication
   useEffect(() => {
@@ -364,7 +383,7 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
       return;
     }
 
-    const entryFeeNum = Number(matchForm.entryFee);
+    const entryFeeNum = isFreeMatchRole ? 0 : Number(matchForm.entryFee);
     if (!Number.isFinite(entryFeeNum) || entryFeeNum < 0) {
       setFormError('Entry Fee cannot be negative.');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -489,10 +508,14 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
           </button>
           <div>
             <h2 className="text-xl font-bold tracking-tighter uppercase italic text-white leading-none">
-              {duplicateId ? 'Duplicate' : 'Create'} <span className="text-purple-500">Match</span>
+              {duplicateId ? 'Duplicate' : isFreeMatchRole ? 'Create Free' : 'Create'} <span className="text-purple-500">Match</span>
             </h2>
             <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500 mt-1">
-              {duplicateId ? `Copying from: ${duplicateId}` : 'Publish new esports tournament'}
+              {duplicateId
+                ? `Copying from: ${duplicateId}`
+                : isFreeMatchRole
+                  ? 'Publish free-entry match (₹0 entry)'
+                  : 'Publish new esports tournament'}
             </p>
           </div>
         </div>
@@ -852,13 +875,22 @@ export default function AdminCreateMatch({ onPageChange }: AdminCreateMatchProps
           {/* Entry Fee & Prize Pool */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-neutral-400 ml-1">Entry Fee (₹) *</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-neutral-400 ml-1">
+                {isFreeMatchRole ? 'Entry Fee (Free Only)' : 'Entry Fee (₹) *'}
+              </label>
               <input 
                 type="number"
                 required
-                value={matchForm.entryFee}
-                onChange={(e) => setMatchForm({...matchForm, entryFee: Number(e.target.value)})}
-                className="w-full h-12 bg-neutral-900 border border-neutral-800 rounded-xl px-3 text-xs font-bold outline-none focus:border-purple-500 transition-all text-white"
+                readOnly={isFreeMatchRole}
+                disabled={isFreeMatchRole}
+                value={isFreeMatchRole ? 0 : matchForm.entryFee}
+                onChange={(e) => {
+                  if (isFreeMatchRole) return;
+                  setMatchForm({...matchForm, entryFee: Number(e.target.value)});
+                }}
+                className={`w-full h-12 bg-neutral-900 border border-neutral-800 rounded-xl px-3 text-xs font-bold outline-none focus:border-purple-500 transition-all text-white ${
+                  isFreeMatchRole ? 'opacity-70 cursor-not-allowed text-emerald-400' : ''
+                }`}
               />
             </div>
 

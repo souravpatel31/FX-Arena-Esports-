@@ -4,6 +4,7 @@ import { ShoppingCart, X, Trophy, Calendar, CheckCircle2, Clock, Loader2, Indian
 import { db } from '../lib/firebase';
 import { collection, query, where, getDocs, doc, getDoc, orderBy, limit } from 'firebase/firestore';
 import { Page, User, Tournament } from '../types';
+import { useModalBackHandler } from '../hooks/useModalBackHandler';
 
 interface MyOrdersModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ interface OrderItem {
 }
 
 export default function MyOrdersModal({ isOpen, onClose, user, onPageChange }: MyOrdersModalProps) {
+  useModalBackHandler(isOpen, onClose);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [loading, setLoading] = useState(true);
 

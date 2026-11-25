@@ -41,6 +41,15 @@ service cloud.firestore {
       );
     }
 
+    function isFreeMatchStaff() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/freeMatchStaff/$(request.auth.uid)) ||
+        (request.auth.token.email_verified == true && request.auth.token.email is string && (
+          request.auth.token.email.lower() == "abhik7772374@gmail.com"
+        ))
+      );
+    }
+
     function isValidStaffResultUserUpdate(existingData, incomingData) {
       return incomingData.diff(existingData).affectedKeys().hasOnly(['wallet', 'stats']) && (
         !incomingData.diff(existingData).affectedKeys().hasAny(['wallet']) || (
@@ -59,6 +68,26 @@ service cloud.firestore {
             incomingData.wallet.get('winnings', 0) >= existingData.wallet.get('winnings', 0) &&
             incomingData.wallet.get('winnings', 0) <= existingData.wallet.get('winnings', 0) + 50000
           )
+        )
+      );
+    }
+
+    function isValidStaffCancelRefundUserUpdate(existingData, incomingData) {
+      return incomingData.diff(existingData).affectedKeys().hasOnly(['wallet']) && (
+        !('wallet' in existingData) ? (
+          incomingData.wallet is map &&
+          incomingData.wallet.get('deposit', 0) is number &&
+          incomingData.wallet.get('deposit', 0) > existingData.get('walletBalance', 0) &&
+          incomingData.wallet.get('deposit', 0) <= existingData.get('walletBalance', 0) + 50000 &&
+          incomingData.wallet.get('winnings', 0) == existingData.get('winnings', 0) &&
+          incomingData.wallet.get('bonus', 0) == existingData.get('bonus', 0)
+        ) : (
+          incomingData.wallet is map &&
+          incomingData.wallet.get('deposit', 0) is number &&
+          incomingData.wallet.get('deposit', 0) > existingData.wallet.get('deposit', 0) &&
+          incomingData.wallet.get('deposit', 0) <= existingData.wallet.get('deposit', 0) + 50000 &&
+          incomingData.wallet.get('winnings', 0) == existingData.wallet.get('winnings', 0) &&
+          incomingData.wallet.get('bonus', 0) == existingData.get('bonus', 0)
         )
       );
     }
@@ -228,6 +257,12 @@ service cloud.firestore {
       allow list, create, update, delete: if isAdmin();
     }
 
+    // Free Match Staff: Trusted free-match control role mappings
+    match /freeMatchStaff/{staffId} {
+      allow get: if isSignedIn() && isValidId(staffId) && (request.auth.uid == staffId || isAdmin());
+      allow list, create, update, delete: if isAdmin();
+    }
+
     // Game Modes: Dynamic game mode configurations
     match /gameModes/{modeId} {
       allow get: if isSignedIn() && isValidId(modeId);
@@ -252,7 +287,8 @@ service cloud.firestore {
       );
       allow update: if isSignedIn() && isValidId(userId) && isValidUserUpdate(incoming()) && (
         isAdmin() ||
-        (isStaff() && isValidStaffResultUserUpdate(existing(), incoming())) || (
+        ((isStaff() || isFreeMatchStaff()) && isValidStaffResultUserUpdate(existing(), incoming())) ||
+        (isStaff() && isValidStaffCancelRefundUserUpdate(existing(), incoming())) || (
           isOwner(userId) &&
           incoming().diff(existing()).affectedKeys().hasOnly([
             'username', 'phone', 'ign', 'gameIGNs', 'wallet',
@@ -282,10 +318,12 @@ service cloud.firestore {
     match /matches/{matchId} {
       allow get: if isSignedIn() && isValidId(matchId);
       allow list: if isSignedIn();
-      allow create: if (isAdmin() || isStaff()) && isValidId(matchId);
-      allow delete: if isAdmin() && isValidId(matchId);
+      allow create: if (isAdmin() || isStaff() || (isFreeMatchStaff() && incoming().get('entryFee', 0) == 0)) && isValidId(matchId);
+      allow delete: if (isAdmin() || isStaff() || (isFreeMatchStaff() && existing().get('entryFee', 0) == 0)) && isValidId(matchId);
       allow update: if isSignedIn() && isValidId(matchId) && (
-        isAdmin() || isStaff() || (
+        isAdmin() ||
+        isStaff() ||
+        (isFreeMatchStaff() && existing().get('entryFee', 0) == 0 && incoming().get('entryFee', existing().get('entryFee', 0)) == 0) || (
           existing().get('status', 'upcoming') in ['upcoming', 'active'] &&
           incoming().diff(existing()).affectedKeys().hasOnly(['players', 'playersCount']) &&
           incoming().players is list &&
@@ -302,16 +340,25 @@ service cloud.firestore {
       );
     }
 
-    // Match Credentials: Private Room ID & Password ONLY for admins, staff, and joined players
+    // Match Credentials: Private Room ID & Password ONLY for admins, staff, free-match staff (free matches), and joined players
     match /matchCredentials/{matchId} {
       allow get: if isSignedIn() && isValidId(matchId) && (
         isAdmin() ||
         isStaff() ||
+        (isFreeMatchStaff() && get(/databases/$(database)/documents/matches/$(matchId)).data.get('entryFee', 0) == 0) ||
         exists(/databases/$(database)/documents/registrations/$(matchId + '_' + request.auth.uid))
       );
-      allow list: if isAdmin() || isStaff();
-      allow create, update: if (isAdmin() || isStaff()) && isValidId(matchId) && isValidMatchCredential(incoming());
-      allow delete: if (isAdmin() || isStaff()) && isValidId(matchId);
+      allow list: if isAdmin() || isStaff() || isFreeMatchStaff();
+      allow create, update: if (
+        isAdmin() ||
+        isStaff() ||
+        (isFreeMatchStaff() && get(/databases/$(database)/documents/matches/$(matchId)).data.get('entryFee', 0) == 0)
+      ) && isValidId(matchId) && isValidMatchCredential(incoming());
+      allow delete: if (
+        isAdmin() ||
+        isStaff() ||
+        (isFreeMatchStaff() && get(/databases/$(database)/documents/matches/$(matchId)).data.get('entryFee', 0) == 0)
+      ) && isValidId(matchId);
     }
 
     // Registrations: Player entries into matches
@@ -350,11 +397,22 @@ service cloud.firestore {
                        isValidTransaction(incoming()) && (
                          isAdmin() ||
                          (
-                           isStaff() &&
+                           (isStaff() || isFreeMatchStaff()) &&
                            incoming().type == 'win' &&
                            incoming().status == 'completed' &&
                            incoming().amount > 0 &&
                            incoming().amount <= 50000
+                         ) || (
+                           isStaff() &&
+                           incoming().type == 'refund' &&
+                           incoming().status == 'completed' &&
+                           incoming().amount > 0 &&
+                           incoming().amount <= 50000 &&
+                           'matchId' in incoming() &&
+                           incoming().matchId is string &&
+                           isValidId(incoming().matchId) &&
+                           exists(/databases/$(database)/documents/matches/$(incoming().matchId)) &&
+                           !existsAfter(/databases/$(database)/documents/matches/$(incoming().matchId))
                          ) || (
                            incoming().userId == request.auth.uid &&
                            incoming().amount > 0 && incoming().amount <= 50000 &&
@@ -407,7 +465,11 @@ service cloud.firestore {
     match /matchResults/{matchId} {
       allow get: if isSignedIn() && isValidId(matchId);
       allow list: if isSignedIn();
-      allow write: if (isAdmin() || isStaff()) && isValidId(matchId);
+      allow write: if (
+        isAdmin() ||
+        isStaff() ||
+        (isFreeMatchStaff() && get(/databases/$(database)/documents/matches/$(matchId)).data.get('entryFee', 0) == 0)
+      ) && isValidId(matchId);
     }
 
     // Payment Settings: Gateway configurations & API secrets (Admin only)
@@ -420,7 +482,12 @@ service cloud.firestore {
     match /notifications/{notificationId} {
       allow get: if isSignedIn() && isValidId(notificationId);
       allow list: if isSignedIn();
-      allow create, delete: if (isAdmin() || isStaff()) && isValidId(notificationId);
+      allow create: if (
+        isAdmin() ||
+        isStaff() ||
+        (isFreeMatchStaff() && incoming().get('type', '') == 'room_creds' && incoming().get('audience', '') == 'match')
+      ) && isValidId(notificationId);
+      allow delete: if (isAdmin() || isStaff()) && isValidId(notificationId);
       allow update: if isSignedIn() && isValidId(notificationId) && (
         isAdmin() || isStaff() || (
           incoming().diff(existing()).affectedKeys().hasOnly(['readBy']) &&
@@ -441,7 +508,7 @@ service cloud.firestore {
 
     // Meta/Counters
     match /meta/counters {
-      allow read, get, write: if isAdmin() || isStaff();
+      allow read, get, write: if isAdmin() || isStaff() || isFreeMatchStaff();
     }
   }
 }

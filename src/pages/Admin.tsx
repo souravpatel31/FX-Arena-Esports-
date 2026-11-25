@@ -7,9 +7,11 @@ import {
   CheckCircle2, AlertCircle, Loader2, Save, RefreshCw,
   Edit2, Copy, Upload, Gamepad2, Key, Check, CheckCheck,
   ListChecks, Sparkles, PlusCircle,
-  ChevronUp, ChevronDown, Bell, QrCode, XCircle
+  ChevronUp, ChevronDown, Bell, QrCode, XCircle, ChevronRight, Layers
 } from 'lucide-react';
 import { Page, User, Tournament, Banner, PaymentGateway } from '../types';
+import { GAME_MODES_DATA } from '../constants';
+import { resolveSafeModeImage } from '../utils/assetUrl';
 import {
   db,
   auth,
@@ -25,7 +27,14 @@ import { formatMatchTime } from '../utils/dateUtils';
 import SafeImage from '../components/SafeImage';
 import { uploadOriginalImage, compactImageForFirestore } from '../utils/imageCompressor';
 import AdminNotificationsTab from '../components/AdminNotificationsTab';
-import { isAuthorizedAdmin, isStaffUser, hasControlPanelAccess, STAFF_EMAILS } from '../utils/adminAuth';
+import {
+  isAuthorizedAdmin,
+  isStaffUser,
+  isFreeMatchStaffUser,
+  hasControlPanelAccess,
+  STAFF_EMAILS,
+  FREE_MATCH_STAFF_EMAILS,
+} from '../utils/adminAuth';
 import { isBlockedShareUrl } from '../utils/shareLinks';
 
 import { 
@@ -84,6 +93,7 @@ enum AdminTab {
   NOTIFICATIONS = 'notifications',
   USERS = 'users',
   MATCHES = 'matches',
+  MODE_MATCHES = 'mode_idp',
   TRANSACTIONS = 'transactions',
   RULES = 'rules',
   REFERRAL = 'referral',
@@ -91,6 +101,20 @@ enum AdminTab {
   MODES = 'modes',
   PAYMENT = 'payment'
 }
+
+const ADMIN_TAB_LABELS: Record<AdminTab, string> = {
+  [AdminTab.DASHBOARD]: 'Dashboard',
+  [AdminTab.NOTIFICATIONS]: 'Notifications',
+  [AdminTab.USERS]: 'Users',
+  [AdminTab.MATCHES]: 'Matches',
+  [AdminTab.MODE_MATCHES]: 'Modes & IDP',
+  [AdminTab.TRANSACTIONS]: 'Transactions',
+  [AdminTab.RULES]: 'Rules',
+  [AdminTab.REFERRAL]: 'Referral',
+  [AdminTab.BANNERS]: 'Banners',
+  [AdminTab.MODES]: 'Edit Modes',
+  [AdminTab.PAYMENT]: 'Payment',
+};
 
 // Built-in rule presets for various game modes and sections
 const RULE_PRESETS: Record<string, { title: string; category: string; rules: string[] }> = {
@@ -186,8 +210,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const initialCache = React.useMemo(() => readAdminCache(), []);
   const isFullAdmin = isAuthorizedAdmin(auth.currentUser);
   const isStaffRole = isStaffUser(auth.currentUser);
+  const isFreeMatchRole = isFreeMatchStaffUser(auth.currentUser);
   const [activeTab, setActiveTab] = useState<AdminTab>(() =>
-    isStaffUser(auth.currentUser) ? AdminTab.MATCHES : AdminTab.DASHBOARD
+    (isStaffUser(auth.currentUser) || isFreeMatchStaffUser(auth.currentUser))
+      ? AdminTab.MATCHES
+      : AdminTab.DASHBOARD
   );
   const [users, setUsers] = useState<User[]>(() => initialCache.users || []);
   const [matches, setMatches] = useState<Tournament[]>(() => initialCache.matches || []);
@@ -215,7 +242,22 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
 
   // Dynamic Rules State for All Game Mode Sections
   const [gameRulesDocs, setGameRulesDocs] = useState<Record<string, { id: string; title: string; category?: string; section?: string; rules: string[]; updatedAt?: any }>>({});
-  const [gameModesList, setGameModesList] = useState<any[]>([]);
+  const [gameModesList, setGameModesList] = useState<any[]>(() => {
+    try {
+      const raw = localStorage.getItem('fxarena_cached_game_modes');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return [...parsed].sort((a, b) => (Number(a.order) ?? 999) - (Number(b.order) ?? 999));
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return [];
+  });
+  const [selectedModeId, setSelectedModeId] = useState<string | null>(null);
+  const [modeSearchTerm, setModeSearchTerm] = useState('');
   const [activeRuleTab, setActiveRuleTab] = useState<string>('battle_royale');
   const [activeSectionTitle, setActiveSectionTitle] = useState<string>('Battle Royale');
   const [activeSectionCategory, setActiveSectionCategory] = useState<string>('Battle Royale');
@@ -273,7 +315,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const [qrUploadProgress, setQrUploadProgress] = useState(0);
   const [paymentFeedback, setPaymentFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Modal back handlers
+  // Modal back handlers (register Mode selection BEFORE match-action modals so back closes top dialog first)
+  useModalBackHandler(
+    Boolean(selectedModeId) && (activeTab === AdminTab.MATCHES || activeTab === AdminTab.MODE_MATCHES),
+    () => setSelectedModeId(null)
+  );
   useModalBackHandler(isDeleteConfirmOpen.isOpen, () => setIsDeleteConfirmOpen({ isOpen: false, matchId: '' }));
   useModalBackHandler(isResultModalOpen, () => setIsResultModalOpen(false));
   useModalBackHandler(isBannerModalOpen, () => setIsBannerModalOpen(false));
@@ -329,25 +375,30 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     const uid = currentUser?.uid;
     const isFull = isAuthorizedAdmin(currentUser);
     const isStaff = isStaffUser(currentUser);
+    const isFreeMatch = isFreeMatchStaffUser(currentUser);
 
     if (!hasControlPanelAccess(currentUser)) {
       onPageChangeRef.current(Page.HOME);
       return;
     }
 
-    if (isStaff) {
+    if (isFreeMatch) {
+      setActiveTab(AdminTab.MATCHES);
+    } else if (isStaff) {
       setActiveTab((prev) =>
-        prev === AdminTab.MATCHES || prev === AdminTab.NOTIFICATIONS ? prev : AdminTab.MATCHES
+        prev === AdminTab.MATCHES || prev === AdminTab.MODE_MATCHES || prev === AdminTab.NOTIFICATIONS
+          ? prev
+          : AdminTab.MATCHES
       );
     }
 
     const loadAdminData = async () => {
       try {
-        // Check if admin/staff needs email verification for Firestore rule writes
+        // Check if admin/staff/free-match role needs email verification for Firestore rule writes
         if (uid === 'XoXyXcnrlzOaMIKKolXnU3mT9xn1' || currentUser?.emailVerified) {
           if (active) setNeedsAdminVerification(false);
         } else if (uid) {
-          const roleCol = isStaff ? 'staff' : 'admins';
+          const roleCol = isFreeMatch ? 'freeMatchStaff' : isStaff ? 'staff' : 'admins';
           const roleDoc = await cachedGetDoc(
             `admin_write_check_${uid}`,
             doc(db, roleCol, uid),
@@ -360,7 +411,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         const OPERATIONAL_TTL = 2 * 60_000;
         const CONFIG_TTL = 10 * 60_000;
 
-        const [usersList, matchesList, credsList] = await Promise.all([
+        const [usersList, matchesList, credsList, sharedModesList] = await Promise.all([
           cachedGetDocs<User>(
             'admin_users',
             query(collection(db, 'users'), limit(120)),
@@ -382,6 +433,12 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             query(collection(db, 'matchCredentials'), limit(80)),
             OPERATIONAL_TTL,
             { persist: false, pathLabel: 'matchCredentials' }
+          ),
+          cachedGetDocs<any>(
+            'gameModes_list',
+            query(collection(db, 'gameModes'), limit(30)),
+            CONFIG_TTL,
+            { pathLabel: 'gameModes', legacyStorageKey: 'fxarena_cached_game_modes', maxPersist: 30 }
           ),
         ]);
 
@@ -420,11 +477,14 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         });
         setMatchCredentialsMap(credMap);
 
+        if (sharedModesList.length > 0) {
+          setGameModesList([...sharedModesList].sort((a, b) => (Number(a.order) ?? 999) - (Number(b.order) ?? 999)));
+        }
+
         if (isFull) {
           const [
             txList,
             rulesList,
-            modesList,
             referralSettings,
             rawBannersList,
             gatewaysList,
@@ -441,12 +501,6 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               query(collection(db, 'gameRules'), limit(30)),
               CONFIG_TTL,
               { pathLabel: 'gameRules' }
-            ),
-            cachedGetDocs<any>(
-              'gameModes_list',
-              query(collection(db, 'gameModes'), limit(30)),
-              CONFIG_TTL,
-              { pathLabel: 'gameModes', legacyStorageKey: 'fxarena_cached_game_modes' }
             ),
             cachedGetDoc<any>(
               'appSettings_referral_support',
@@ -494,10 +548,6 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             };
           });
           setGameRulesDocs(docsMap);
-
-          if (modesList.length > 0) {
-            setGameModesList([...modesList].sort((a, b) => (a.order ?? 999) - (b.order ?? 999)));
-          }
 
           if (referralSettings) {
             setAppSettings(referralSettings);
@@ -614,66 +664,80 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
   const processDeleteMatch = async () => {
     const { matchId } = isDeleteConfirmOpen;
 
-    if (!matchId || typeof matchId !== "string") {
-      console.error("Invalid matchId provided for deletion:", matchId);
+    if (!matchId || typeof matchId !== 'string') {
+      console.error('Invalid matchId provided for cancellation:', matchId);
       return;
     }
 
     setIsProcessing(true);
     try {
-      console.log("Deleting matchId:", matchId);
-
       await runTransaction(db, async (tx) => {
-        const matchRef = doc(db, "matches", matchId);
+        const matchRef = doc(db, 'matches', matchId);
         const matchSnap = await tx.get(matchRef);
-        
+
         if (!matchSnap.exists()) {
-           console.warn("Match document does not exist:", matchId);
-           return; 
+          return;
         }
 
         const matchData = matchSnap.data() as Tournament;
-        const players = matchData.players || [];
+        const players = Array.isArray(matchData.players) ? matchData.players : [];
         const entryFee = Number(matchData.entryFee || 0);
 
-        console.log("Match Data fetched for delete:", {
-          matchId,
-          players,
-          entryFee,
-          status: matchData.status
-        });
-
-        // 1. Process Refunds - Only if NOT completed
-        if (matchData.status !== 'completed' && players.length > 0 && entryFee > 0) {
-          console.log(`Processing refunds for ${players.length} players...`, players);
-          for (const player of players) {
-            if (!player.userId || typeof player.userId !== 'string') continue;
-            
-            const userRef = doc(db, "users", player.userId);
-            
-            // Refund entry fee using increment to wallet.deposit
-            tx.update(userRef, { 
-              "wallet.deposit": increment(entryFee)
-            });
-
-            // Record refund transaction
-            const transCol = collection(db, "transactions");
-            const newTransRef = doc(transCol);
-            tx.set(newTransRef, {
-              userId: player.userId,
-              type: 'refund',
-              amount: entryFee,
-              matchId,
-              status: 'completed',
-              title: `REFUND: ${matchData.displayId || '#000'}`,
-              createdAt: serverTimestamp()
-            });
-          }
-        } else {
-          console.log("Skipping refunds (Match completed or no players/fee)");
+        if (isFreeMatchStaffUser(auth.currentUser) && entryFee > 0) {
+          throw new Error('Free Match Control can only cancel free (₹0 entry) matches.');
         }
 
-        // 2. Delete Match
+        // 1. Aggregate refunds per unique userId and read ALL user docs BEFORE any writes
+        const slotsByUser = new Map<string, number>();
+        if (matchData.status !== 'completed' && players.length > 0 && entryFee > 0) {
+          for (const player of players) {
+            if (!player?.userId || typeof player.userId !== 'string') continue;
+            slotsByUser.set(player.userId, (slotsByUser.get(player.userId) || 0) + 1);
+          }
+        }
+
+        const userSnapMap = new Map<string, { ref: any; snap: any }>();
+        for (const userId of slotsByUser.keys()) {
+          const userRef = doc(db, 'users', userId);
+          const userSnap = await tx.get(userRef);
+          userSnapMap.set(userId, { ref: userRef, snap: userSnap });
+        }
+
+        // 2. Apply wallet deposit refunds and create refund transactions
+        for (const [userId, slotsCount] of slotsByUser.entries()) {
+          const entry = userSnapMap.get(userId);
+          if (!entry || !entry.snap.exists()) continue;
+          const uData = entry.snap.data() as any;
+          const refundAmount = Math.round(slotsCount * entryFee * 100) / 100;
+          if (refundAmount <= 0) continue;
+
+          if (!uData?.wallet) {
+            tx.update(entry.ref, {
+              wallet: {
+                deposit: Math.round(((Number(uData?.walletBalance || 0)) + refundAmount) * 100) / 100,
+                winnings: Number(uData?.winnings || 0),
+                bonus: Number(uData?.bonus || 0),
+              },
+            });
+          } else {
+            tx.update(entry.ref, {
+              'wallet.deposit': increment(refundAmount),
+            });
+          }
+
+          const newTransRef = doc(collection(db, 'transactions'));
+          tx.set(newTransRef, {
+            userId,
+            type: 'refund',
+            amount: refundAmount,
+            matchId,
+            status: 'completed',
+            title: `REFUND: ${matchData.displayId || matchData.title || '#000'}`.slice(0, 200),
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        // 3. Cancel / Delete Match document
         tx.delete(matchRef);
       });
 
@@ -683,9 +747,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
       invalidateFirestoreCache('admin_users');
       invalidateFirestoreCache('admin_tx');
       setRefreshKey((k) => k + 1);
-      alert('Match deleted successfully and players refunded (if applicable)');
-    } catch (e) {
-      console.error("Error during match deletion:", e);
+      alert('Match cancelled successfully and players refunded (if applicable).');
+    } catch (e: any) {
+      console.error('Error during match cancellation:', e);
+      alert(e?.message || 'Failed to cancel match. Please check your permissions.');
       handleFirestoreError(e, OperationType.DELETE, `matches/${matchId}`);
     } finally {
       setIsProcessing(false);
@@ -1689,6 +1754,491 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
     }
   };
 
+  const visibleMatches = React.useMemo(
+    () => (isFreeMatchRole ? matches.filter((m) => Number(m.entryFee || 0) === 0) : matches),
+    [isFreeMatchRole, matches]
+  );
+
+  // Strict mode-wise catalog and match grouping (keeps each mode's matches strictly separated)
+  const modeBuckets = React.useMemo(() => {
+    interface ModeBucket {
+      id: string;
+      gameId: string;
+      title: string;
+      subtitle: string;
+      category: string;
+      image: string;
+      order: number;
+      matches: Tournament[];
+      needIdpCount: number;
+      readyCount: number;
+      liveCount: number;
+      completedCount: number;
+    }
+
+    const sourceModes =
+      gameModesList.length > 0
+        ? gameModesList.map((m, idx) => ({
+            id: String(m.id || '').trim() || `mode_${idx}`,
+            gameId: String(m.gameId || 'freefire'),
+            title: String(m.title || m.id || 'Arena').trim(),
+            subtitle: String(m.subtitle || m.category || 'Battleground').trim(),
+            category: String(m.category || m.subtitle || 'Arena').trim(),
+            image: resolveSafeModeImage(m.image, `${m.title || ''} ${m.subtitle || ''} ${m.id || ''}`),
+            order: Number(m.order ?? idx + 1),
+          }))
+        : (GAME_MODES_DATA.freefire || []).map((m, idx) => ({
+            id: m.id,
+            gameId: 'freefire',
+            title: m.title,
+            subtitle: m.subtitle,
+            category: m.category,
+            image: resolveSafeModeImage(m.image, `${m.title} ${m.subtitle} ${m.id}`),
+            order: idx + 1,
+          }));
+
+    const bucketMap = new Map<string, ModeBucket>();
+    sourceModes.forEach((gm) => {
+      bucketMap.set(gm.id, {
+        ...gm,
+        matches: [],
+        needIdpCount: 0,
+        readyCount: 0,
+        liveCount: 0,
+        completedCount: 0,
+      });
+    });
+
+    const normalizeText = (v?: string) =>
+      String(v || '')
+        .toLowerCase()
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const findModeBucketForMatch = (m: Tournament): ModeBucket => {
+      const rawModeId = String(m.modeId || '').trim().toLowerCase();
+      const cleanModeId = normalizeText(m.modeId);
+      const mSection = normalizeText(m.section);
+      const mMode = normalizeText(m.mode);
+      const mTitle = normalizeText(m.title);
+
+      // 1. Exact modeId match
+      if (rawModeId) {
+        const direct = sourceModes.find(
+          (gm) =>
+            gm.id.toLowerCase() === rawModeId ||
+            `${gm.gameId}_${gm.id}`.toLowerCase() === rawModeId ||
+            normalizeText(gm.id) === cleanModeId
+        );
+        if (direct) return bucketMap.get(direct.id)!;
+      }
+
+      // 2. Exact title/mode match (longer title first to prevent partial prefix collision)
+      const byTitleDesc = [...sourceModes].sort((a, b) => b.title.length - a.title.length);
+      for (const gm of byTitleDesc) {
+        const gmTitle = normalizeText(gm.title);
+        if (!gmTitle) continue;
+        if (
+          (cleanModeId && cleanModeId === gmTitle) ||
+          (mMode && mMode === gmTitle) ||
+          (mSection && mSection === gmTitle)
+        ) {
+          return bucketMap.get(gm.id)!;
+        }
+      }
+
+      // 3. Canonical section + squad-size matching (BR / CS / Lone Wolf)
+      for (const gm of sourceModes) {
+        const gmId = gm.id.toLowerCase();
+        const gmTitle = normalizeText(gm.title);
+
+        if (mSection === 'battle royale' || mSection === 'full map') {
+          const isBrBucket =
+            gmId.startsWith('br_') ||
+            gmTitle.includes('full map') ||
+            gmTitle.startsWith('br ');
+          if (isBrBucket) {
+            if (mMode && (gmId.endsWith(`_${mMode}`) || gmTitle.includes(mMode))) {
+              return bucketMap.get(gm.id)!;
+            }
+            if (gmId === 'full_map' || gmTitle === 'full map') {
+              return bucketMap.get(gm.id)!;
+            }
+          }
+        }
+
+        if (mSection === 'clash squad' || mSection === 'cs 1v1' || mSection === 'cs 2v2') {
+          const isCsBucket = gmId.startsWith('cs_') || gmTitle.startsWith('cs ') || gmTitle.includes('clash');
+          if (isCsBucket) {
+            if (mMode && (gmId.endsWith(`_${mMode}`) || gmTitle.includes(mMode))) {
+              return bucketMap.get(gm.id)!;
+            }
+            if (mSection === 'cs 1v1' && gmTitle.includes('1v1')) return bucketMap.get(gm.id)!;
+            if (mSection === 'cs 2v2' && gmTitle.includes('2v2')) return bucketMap.get(gm.id)!;
+          }
+        }
+
+        if (mSection === 'lone wolf') {
+          const isLwBucket =
+            gmId.includes('lone') ||
+            gmId.startsWith('lw') ||
+            gmTitle.includes('lone') ||
+            gmTitle.startsWith('lw ');
+          if (isLwBucket) {
+            if (mMode && (gmId.endsWith(`_${mMode}`) || gmTitle.includes(mMode))) {
+              return bucketMap.get(gm.id)!;
+            }
+            if (mMode === 'solo' && gmTitle.includes('1v1')) return bucketMap.get(gm.id)!;
+          }
+        }
+      }
+
+      // 4. Title phrase fallback across custom mode titles
+      for (const gm of byTitleDesc) {
+        const gmTitle = normalizeText(gm.title);
+        if (gmTitle && mTitle.includes(gmTitle)) {
+          return bucketMap.get(gm.id)!;
+        }
+      }
+
+      // 5. Dedicated dynamic fallback bucket so legacy/custom matches stay isolated under their own mode
+      const fallbackKey =
+        rawModeId ||
+        normalizeText(m.section || m.mode || 'other_matches').replace(/[^a-z0-9]+/g, '_') ||
+        'other_matches';
+
+      if (!bucketMap.has(fallbackKey)) {
+        const displayTitle = (
+          (rawModeId ? rawModeId.replace(/[_-]+/g, ' ') : '') ||
+          m.section ||
+          m.mode ||
+          'Other Matches'
+        ).toUpperCase();
+        bucketMap.set(fallbackKey, {
+          id: fallbackKey,
+          gameId: m.gameId || 'freefire',
+          title: displayTitle,
+          subtitle: m.section || 'Custom Mode',
+          category: m.section || 'Custom',
+          image: resolveSafeModeImage(m.image, `${m.section || ''} ${m.mode || ''} ${m.title || ''}`),
+          order: 9999 + bucketMap.size,
+          matches: [],
+          needIdpCount: 0,
+          readyCount: 0,
+          liveCount: 0,
+          completedCount: 0,
+        });
+      }
+      return bucketMap.get(fallbackKey)!;
+    };
+
+    visibleMatches.forEach((m) => {
+      const bucket = findModeBucketForMatch(m);
+      bucket.matches.push(m);
+      const cred = matchCredentialsMap[m.id];
+      const hasC = Boolean(
+        (cred?.roomId && cred?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword)
+      );
+      if (m.status === 'completed') {
+        bucket.completedCount += 1;
+      } else {
+        if (m.status === 'ongoing') bucket.liveCount += 1;
+        if (hasC) bucket.readyCount += 1;
+        else bucket.needIdpCount += 1;
+      }
+    });
+
+    // Sort matches inside each bucket: active/live/upcoming newest first, completed after
+    bucketMap.forEach((bucket) => {
+      bucket.matches.sort((a, b) => {
+        const aDone = a.status === 'completed' ? 1 : 0;
+        const bDone = b.status === 'completed' ? 1 : 0;
+        if (aDone !== bDone) return aDone - bDone;
+        return (Number(b.matchNumber) || 0) - (Number(a.matchNumber) || 0);
+      });
+    });
+
+    return Array.from(bucketMap.values()).sort((a, b) => a.order - b.order);
+  }, [gameModesList, visibleMatches, matchCredentialsMap]);
+
+  const selectedModeBucket = React.useMemo(
+    () => (selectedModeId ? modeBuckets.find((b) => b.id === selectedModeId) || null : null),
+    [modeBuckets, selectedModeId]
+  );
+
+  const renderMatchCard = (m: Tournament) => {
+    const cred = matchCredentialsMap[m.id];
+    const displayRoomId = cred?.roomId || m.roomId || '';
+    const displayRoomPass = cred?.roomPassword || m.roomPassword || '';
+    const hasRoomCreds = Boolean(displayRoomId && displayRoomPass);
+
+    return (
+      <div key={m.id} className="p-5 bg-neutral-900 border border-neutral-800 rounded-3xl relative overflow-hidden group shadow-lg">
+        <div className="absolute top-0 right-0 p-4 flex gap-2">
+          {!isFreeMatchRole && (
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleDuplicateMatch(m);
+                }}
+                className="p-2 bg-purple-500/10 text-purple-500 rounded-lg hover:bg-purple-500 transition-colors hover:text-white"
+                title="Duplicate Match"
+              >
+                <Copy size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleEditMatch(m);
+                }}
+                className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500 transition-colors hover:text-white"
+                title="Edit Match"
+              >
+                <Edit2 size={14} />
+              </button>
+            </>
+          )}
+          {(isFullAdmin || isStaffRole || isFreeMatchRole) && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDeleteConfirmOpen({ isOpen: true, matchId: m.id });
+              }}
+              className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500 transition-colors hover:text-white"
+              title="Cancel Match"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-black text-purple-400 bg-purple-500/10 px-2.5 py-0.5 rounded-lg border border-purple-500/20">
+              {m.displayId || '#000'}
+            </span>
+            <span className="text-[9px] font-black uppercase tracking-wider text-neutral-400 bg-neutral-800 px-2 py-0.5 rounded-md">
+              {m.section || m.mode || 'Battle Royale'}
+            </span>
+          </div>
+          {m.status === 'completed' ? (
+            <span className="bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full">
+              Completed
+            </span>
+          ) : m.status === 'ongoing' ? (
+            <span className="bg-amber-500/20 border border-amber-500/30 text-amber-400 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full animate-pulse">
+              Live / Ongoing
+            </span>
+          ) : (
+            <span className="bg-blue-500/20 border border-blue-500/30 text-blue-400 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full">
+              Upcoming
+            </span>
+          )}
+        </div>
+
+        <h4 className="text-sm font-black italic pr-16 mb-3 text-white">{m.title}</h4>
+
+        <div className="flex gap-4 mb-4">
+          <div className="flex items-center gap-1.5 text-neutral-400">
+            <Clock size={12} className="text-neutral-500" />
+            <span className="text-[9px] font-black uppercase tracking-widest">{formatMatchTime(m.time)}</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-neutral-400">
+            <MapIcon size={12} className="text-neutral-500" />
+            <span className="text-[9px] font-black uppercase tracking-widest">{m.map}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between py-3 border-y border-neutral-800/80">
+          <div>
+            <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500 mb-0.5">Players Joined</p>
+            <p className="text-xs font-black italic text-white">{m.playersCount}/{m.totalSlots || m.maxPlayers}</p>
+          </div>
+          <div>
+            <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500 mb-0.5">Entry Fee</p>
+            <p className="text-xs font-black text-emerald-400 italic leading-none">{m.entryFee === 0 ? 'FREE' : `₹${m.entryFee}`}</p>
+          </div>
+          <div>
+            <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500 mb-0.5">Prize Pool</p>
+            <p className="text-xs font-black text-amber-400 italic leading-none">{m.prizeType === 'perKill' ? `₹${m.perKillAmount}/kill` : `₹${m.prizePool}`}</p>
+          </div>
+        </div>
+
+        {/* Room Credentials Banner */}
+        <div className="mt-4 p-3.5 rounded-2xl border bg-black/60 flex flex-col gap-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Key size={14} className={hasRoomCreds ? 'text-emerald-400' : 'text-amber-400'} />
+              <span className="text-[10px] font-black uppercase tracking-widest text-neutral-300">Room Credentials</span>
+            </div>
+            {hasRoomCreds ? (
+              <span className="text-[8px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                Declared & Live
+              </span>
+            ) : (
+              <span className="text-[8px] font-black uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                Pending
+              </span>
+            )}
+          </div>
+
+          {hasRoomCreds ? (
+            <div className="grid grid-cols-2 gap-2 bg-neutral-900/90 p-2.5 rounded-xl border border-neutral-800">
+              <div className="flex items-center justify-between pr-1">
+                <div>
+                  <p className="text-[7px] font-black text-neutral-500 uppercase">Room ID</p>
+                  <p className="text-xs font-black text-white font-mono">{displayRoomId}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyCredential(displayRoomId, `room_${m.id}`)}
+                  className="p-1 text-neutral-400 hover:text-white"
+                  title="Copy Room ID"
+                >
+                  {copiedKey === `room_${m.id}` ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                </button>
+              </div>
+              <div className="flex items-center justify-between pr-1 border-l border-neutral-800 pl-2">
+                <div>
+                  <p className="text-[7px] font-black text-neutral-500 uppercase">Password</p>
+                  <p className="text-xs font-black text-white font-mono">{displayRoomPass}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyCredential(displayRoomPass, `pass_${m.id}`)}
+                  className="p-1 text-neutral-400 hover:text-white"
+                  title="Copy Password"
+                >
+                  {copiedKey === `pass_${m.id}` ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[9px] font-bold text-neutral-500 italic">
+              Room ID & Password not declared yet. Only joined players will see saved credentials.
+            </p>
+          )}
+
+          {/* Quick Inline Inputs */}
+          <div className="flex items-center gap-2 pt-1">
+            <input
+              type="text"
+              placeholder="Room ID"
+              defaultValue={displayRoomId}
+              id={`quick_room_${activeTab}_${m.id}`}
+              className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-[10px] font-bold text-white outline-none focus:border-purple-500 placeholder:text-neutral-600"
+            />
+            <input
+              type="text"
+              placeholder="Pass"
+              defaultValue={displayRoomPass}
+              id={`quick_pass_${activeTab}_${m.id}`}
+              className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-[10px] font-bold text-white outline-none focus:border-purple-500 placeholder:text-neutral-600"
+            />
+            <button
+              type="button"
+              onClick={async () => {
+                const idInput = document.getElementById(`quick_room_${activeTab}_${m.id}`) as HTMLInputElement;
+                const passInput = document.getElementById(`quick_pass_${activeTab}_${m.id}`) as HTMLInputElement;
+                const rId = idInput ? idInput.value.trim() : '';
+                const rPass = passInput ? passInput.value.trim() : '';
+                if (!rId && !rPass) {
+                  alert('Please enter Room ID and Password first.');
+                  return;
+                }
+                try {
+                  const batch = writeBatch(db);
+                  batch.set(doc(db, 'matchCredentials', m.id), {
+                    matchId: m.id,
+                    roomId: rId,
+                    roomPassword: rPass,
+                    updatedAt: serverTimestamp()
+                  }, { merge: true });
+                  const updates: any = {
+                    hasRoomCredentials: Boolean(rId && rPass),
+                    roomId: '',
+                    roomPassword: '',
+                    updatedAt: serverTimestamp()
+                  };
+                  if (rId && m.status === 'upcoming') {
+                    updates.status = 'ongoing';
+                  }
+                  batch.update(doc(db, 'matches', m.id), updates);
+                  await batch.commit();
+                  invalidateFirestoreCache('admin_matches');
+                  invalidateFirestoreCache('matches_list');
+                  invalidateFirestoreCache('admin_matchCreds');
+                  invalidateFirestoreCache(`matchCreds_${m.id}`);
+                  setRefreshKey((k) => k + 1);
+                  alert('Room credentials updated securely for joined players!');
+                } catch (err: any) {
+                  console.error('Quick save room failed:', err);
+                  alert(err?.message || 'Failed to save Room ID & Password.');
+                  handleFirestoreError(err, OperationType.UPDATE, `matchCredentials/${m.id}`);
+                }
+              }}
+              className="p-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl border border-neutral-700 active:scale-95 transition-all"
+              title="Save Credentials Quick"
+            >
+              <Save size={13} />
+            </button>
+          </div>
+        </div>
+
+        {/* Action Buttons: Declare Room Modal, Declare Result & Cancel Match */}
+        <div className="grid grid-cols-2 gap-2 mt-4">
+          <button
+            type="button"
+            onClick={() => handleOpenDeclareRoomModal(m)}
+            className="py-3 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-purple-300 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+          >
+            <Key size={13} className="text-purple-400" />
+            {hasRoomCreds ? 'Edit Room Info' : 'Publish IDP'}
+          </button>
+
+          {m.status !== 'completed' ? (
+            <button
+              type="button"
+              onClick={() => handleDeclareResult(m)}
+              className="py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-wider shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+            >
+              <Trophy size={13} />
+              Declare Result
+            </button>
+          ) : (
+            <div className="py-3 bg-neutral-800/60 border border-neutral-800 rounded-xl text-[10px] font-black uppercase tracking-wider text-neutral-500 text-center flex items-center justify-center gap-1.5">
+              <CheckCheck size={13} className="text-emerald-500" />
+              Result Declared
+            </div>
+          )}
+        </div>
+
+        {(isFullAdmin || isStaffRole || isFreeMatchRole) && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDeleteConfirmOpen({ isOpen: true, matchId: m.id });
+            }}
+            className="w-full mt-2 py-2.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
+          >
+            <XCircle size={13} />
+            Cancel Match
+          </button>
+        )}
+      </div>
+    );
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -1710,10 +2260,15 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             </button>
             <div>
               <h2 className="text-xl font-bold tracking-tighter uppercase italic text-white leading-none">
-                {isStaffRole ? 'Staff' : 'Admin'} <span className="text-purple-500">Panel</span>
+                {isFreeMatchRole ? 'Free Match' : isStaffRole ? 'Staff' : 'Admin'}{' '}
+                <span className="text-purple-500">{isFreeMatchRole ? 'Control' : 'Panel'}</span>
               </h2>
               <p className="text-[8px] font-black uppercase tracking-widest text-neutral-600 mt-1">
-                {isStaffRole ? 'Match • IDP • Result • Notification Control' : 'Production Version 2.0'}
+                {isFreeMatchRole
+                  ? 'Create Free Match • Publish IDP • Declare Result • Cancel'
+                  : isStaffRole
+                    ? 'Match • IDP • Result • Notification Control'
+                    : 'Production Version 2.0'}
               </p>
             </div>
           </div>
@@ -1734,12 +2289,18 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               <AlertCircle size={18} className="text-amber-400 shrink-0 mt-0.5" />
               <div className="text-xs leading-snug">
                 <p className="font-black uppercase tracking-wider text-amber-300">
-                  {isStaffRole ? 'Staff Email Verification Needed' : 'Admin Email Verification Needed'}
+                  {isFreeMatchRole
+                    ? 'Free Match Email Verification Needed'
+                    : isStaffRole
+                      ? 'Staff Email Verification Needed'
+                      : 'Admin Email Verification Needed'}
                 </p>
                 <p className="text-neutral-300 mt-0.5">
-                  {isStaffRole
-                    ? 'To create matches, declare Room IDP, declare results, or send notifications securely, verify your email once.'
-                    : 'To approve deposits, declare results, or edit matches securely from this admin account, verify your email once.'}
+                  {isFreeMatchRole
+                    ? 'To create free matches, publish Room IDP, declare results, or cancel free matches securely, verify your email once.'
+                    : isStaffRole
+                      ? 'To create matches, declare Room IDP, declare results, or send notifications securely, verify your email once.'
+                      : 'To approve deposits, declare results, or edit matches securely from this admin account, verify your email once.'}
                 </p>
               </div>
             </div>
@@ -1768,7 +2329,10 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     await auth.currentUser.getIdToken(true);
                     let hasRoleDoc = false;
                     try {
-                      if (isStaffRole) {
+                      if (isFreeMatchRole) {
+                        const fmDoc = await getDoc(doc(db, 'freeMatchStaff', auth.currentUser.uid));
+                        hasRoleDoc = fmDoc.exists();
+                      } else if (isStaffRole) {
                         const sDoc = await getDoc(doc(db, 'staff', auth.currentUser.uid));
                         hasRoleDoc = sDoc.exists();
                       } else {
@@ -1782,7 +2346,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                       setNeedsAdminVerification(false);
                       setVerificationFeedback(null);
                     } else {
-                      setVerificationFeedback('Not verified yet. Click the link in your inbox or ask Super Admin to tap "Sync Staff" in Users tab.');
+                      setVerificationFeedback(
+                        isFreeMatchRole
+                          ? 'Not verified yet. Click the link in your inbox or ask Super Admin to tap "Sync Free Match" in Users tab.'
+                          : 'Not verified yet. Click the link in your inbox or ask Super Admin to tap "Sync Staff" in Users tab.'
+                      );
                     }
                   }
                 }}
@@ -1798,33 +2366,57 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
         )}
 
         {/* Tab Navigation */}
-        <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
-          {(isStaffRole ? [AdminTab.MATCHES, AdminTab.NOTIFICATIONS] : Object.values(AdminTab)).map((tab) => (
-            <button
-              type="button"
-              key={tab}
-              onClick={() => {
-                if (tab === AdminTab.MODES && isFullAdmin) {
-                  onPageChange(Page.ADMIN_MODES);
-                  return;
-                }
-                setActiveTab(tab);
-              }}
-              className={`px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap border flex items-center gap-1.5 ${
-                activeTab === tab 
-                  ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-600/30' 
-                  : 'bg-neutral-900 border-neutral-800 text-neutral-500'
-              }`}
-            >
-              <span>{tab}</span>
-              {isFullAdmin && tab === AdminTab.TRANSACTIONS && pendingTransactionsCount > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-black text-[8px] font-black leading-none">
-                  {pendingTransactionsCount}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        {!isFreeMatchRole && (
+          <div className="flex gap-2 mb-8 overflow-x-auto pb-2 no-scrollbar">
+            {(isStaffRole
+              ? [AdminTab.MATCHES, AdminTab.MODE_MATCHES, AdminTab.NOTIFICATIONS]
+              : Object.values(AdminTab)
+            ).map((tab) => {
+              const needIdpTotal = visibleMatches.filter((m) => {
+                const c = matchCredentialsMap[m.id];
+                const hasC = Boolean(
+                  (c?.roomId && c?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword)
+                );
+                return !hasC && m.status !== 'completed';
+              }).length;
+
+              return (
+                <button
+                  type="button"
+                  key={tab}
+                  onClick={() => {
+                    if (tab === AdminTab.MODES && isFullAdmin) {
+                      onPageChange(Page.ADMIN_MODES);
+                      return;
+                    }
+                    if (tab !== activeTab) {
+                      setSelectedModeId(null);
+                      setMatchStatusFilter('all');
+                    }
+                    setActiveTab(tab);
+                  }}
+                  className={`px-5 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap border flex items-center gap-1.5 ${
+                    activeTab === tab
+                      ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-600/30'
+                      : 'bg-neutral-900 border-neutral-800 text-neutral-500'
+                  }`}
+                >
+                  <span>{ADMIN_TAB_LABELS[tab]}</span>
+                  {tab === AdminTab.MODE_MATCHES && needIdpTotal > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-black text-[8px] font-black leading-none">
+                      {needIdpTotal}
+                    </span>
+                  )}
+                  {isFullAdmin && tab === AdminTab.TRANSACTIONS && pendingTransactionsCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-black text-[8px] font-black leading-none">
+                      {pendingTransactionsCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         <AnimatePresence mode="wait">
           {isFullAdmin && activeTab === AdminTab.DASHBOARD && (
@@ -1895,7 +2487,9 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                     (u.email || '').toLowerCase().includes(searchTerm.toLowerCase())
                   )
                   .map((u) => {
-                    const isUserStaff = STAFF_EMAILS.includes((u.email || '').toLowerCase().trim());
+                    const normalizedUserEmail = (u.email || '').toLowerCase().trim();
+                    const isUserStaff = STAFF_EMAILS.includes(normalizedUserEmail);
+                    const isUserFreeMatch = FREE_MATCH_STAFF_EMAILS.includes(normalizedUserEmail);
                     return (
                       <div 
                         key={u.id}
@@ -1914,6 +2508,11 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                                   STAFF
                                 </span>
                               )}
+                              {isUserFreeMatch && (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-[8px] font-black uppercase tracking-wider">
+                                  FREE MATCH
+                                </span>
+                              )}
                             </div>
                             <p className="text-[8px] font-black uppercase tracking-widest text-neutral-600 truncate">{u.email}</p>
                           </div>
@@ -1926,7 +2525,7 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                                 e.stopPropagation();
                                 try {
                                   await setDoc(doc(db, 'staff', u.id!), {
-                                    email: (u.email || '').toLowerCase().trim(),
+                                    email: normalizedUserEmail,
                                     role: 'staff',
                                     updatedAt: serverTimestamp(),
                                   }, { merge: true });
@@ -1938,6 +2537,27 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
                               className="px-2.5 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600 border border-purple-500/40 text-purple-200 hover:text-white text-[9px] font-black uppercase tracking-wider transition-all"
                             >
                               Sync Staff
+                            </button>
+                          )}
+                          {isUserFreeMatch && u.id && (
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                try {
+                                  await setDoc(doc(db, 'freeMatchStaff', u.id!), {
+                                    email: normalizedUserEmail,
+                                    role: 'free_match_staff',
+                                    updatedAt: serverTimestamp(),
+                                  }, { merge: true });
+                                  alert(`Free Match Control access synced for ${u.email}!`);
+                                } catch (err: any) {
+                                  alert(err?.message || 'Failed to sync free match control access');
+                                }
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/40 text-emerald-200 hover:text-white text-[9px] font-black uppercase tracking-wider transition-all"
+                            >
+                              Sync Free Match
                             </button>
                           )}
                           <span className="text-[10px] font-black text-emerald-400 italic">
@@ -1952,353 +2572,313 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
             </motion.div>
           )}
 
-          {activeTab === AdminTab.MATCHES && (
+          {(activeTab === AdminTab.MATCHES || activeTab === AdminTab.MODE_MATCHES) && (
             <motion.div
-              key="matches"
+              key={activeTab}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
               className="space-y-6"
             >
-              <div className="space-y-4">
-                <button 
-                  type="button"
-                  onClick={() => onPageChange(Page.ADMIN_CREATE_MATCH)}
-                  className="w-full py-5 bg-purple-600 hover:bg-purple-500 rounded-2xl flex items-center justify-center gap-3 shadow-lg shadow-purple-600/30 active:scale-[0.98] transition-all text-white"
-                >
-                  <Plus size={18} />
-                  <span className="text-xs font-black uppercase tracking-widest">Create New Match</span>
-                </button>
-
-                <div className="relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500" size={16} />
-                  <input 
-                    type="text"
-                    placeholder="Search by Match ID, Title or Section..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl py-4 pl-12 pr-4 text-xs font-bold outline-none focus:border-purple-500 transition-all"
-                  />
-                </div>
-
-                {/* Match Status Filters */}
-                <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-                  {[
-                    { id: 'all', label: `All (${matches.length})` },
-                    { 
-                      id: 'need_room', 
-                      label: `⚠️ Need Room ID (${matches.filter(m => {
-                        const c = matchCredentialsMap[m.id];
-                        const hasC = Boolean((c?.roomId && c?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword));
-                        return !hasC && m.status !== 'completed';
-                      }).length})` 
-                    },
-                    { 
-                      id: 'room_ready', 
-                      label: `🔑 Room Ready (${matches.filter(m => {
-                        const c = matchCredentialsMap[m.id];
-                        const hasC = Boolean((c?.roomId && c?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword));
-                        return hasC && m.status !== 'completed';
-                      }).length})` 
-                    },
-                    { 
-                      id: 'live', 
-                      label: `⚡ Live (${matches.filter(m => m.status === 'ongoing').length})` 
-                    },
-                    { 
-                      id: 'completed', 
-                      label: `🏆 Completed (${matches.filter(m => m.status === 'completed').length})` 
-                    }
-                  ].map((filterItem) => (
-                    <button
-                      type="button"
-                      key={filterItem.id}
-                      onClick={() => setMatchStatusFilter(filterItem.id as any)}
-                      className={`px-3.5 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider whitespace-nowrap transition-all border ${
-                        matchStatusFilter === filterItem.id
-                          ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-sm'
-                          : 'bg-neutral-900/80 border-neutral-800 text-neutral-500 hover:text-neutral-300'
-                      }`}
-                    >
-                      {filterItem.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                {matches
-                  .filter(m => {
-                    const matchText = (m.displayId || '') + ' ' + (m.title || '') + ' ' + (m.section || '') + ' ' + (m.map || '');
-                    const matchesSearch = matchText.toLowerCase().includes(searchTerm.toLowerCase());
-                    if (!matchesSearch) return false;
-
-                    const cred = matchCredentialsMap[m.id];
-                    const hasC = Boolean((cred?.roomId && cred?.roomPassword) || m.hasRoomCredentials || (m.roomId && m.roomPassword));
-
-                    if (matchStatusFilter === 'need_room') {
-                      return !hasC && m.status !== 'completed';
-                    }
-                    if (matchStatusFilter === 'room_ready') {
-                      return hasC && m.status !== 'completed';
-                    }
-                    if (matchStatusFilter === 'live') {
-                      return m.status === 'ongoing';
-                    }
-                    if (matchStatusFilter === 'completed') {
-                      return m.status === 'completed';
-                    }
-                    return true;
-                  })
-                  .map((m) => {
-                    const cred = matchCredentialsMap[m.id];
-                    const displayRoomId = cred?.roomId || m.roomId || '';
-                    const displayRoomPass = cred?.roomPassword || m.roomPassword || '';
-                    const hasRoomCreds = Boolean(displayRoomId && displayRoomPass);
-                    return (
-                      <div key={m.id} className="p-5 bg-neutral-900 border border-neutral-800 rounded-3xl relative overflow-hidden group shadow-lg">
-                        <div className="absolute top-0 right-0 p-4 flex gap-2">
-                          <button 
-                            type="button"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleDuplicateMatch(m);
-                            }}
-                            className="p-2 bg-purple-500/10 text-purple-500 rounded-lg hover:bg-purple-500 transition-colors hover:text-white"
-                            title="Duplicate Match"
-                          >
-                            <Copy size={14} />
-                          </button>
-                          <button 
-                            type="button"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleEditMatch(m);
-                            }}
-                            className="p-2 bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500 transition-colors hover:text-white"
-                            title="Edit Match"
-                          >
-                            <Edit2 size={14} />
-                          </button>
-                          {isFullAdmin && (
-                            <button 
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setIsDeleteConfirmOpen({ isOpen: true, matchId: m.id });
-                              }}
-                              className="p-2 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500 transition-colors hover:text-white"
-                              title="Delete Match"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
-                        </div>
-                        
-                        <div className="flex items-center justify-between mb-2">
-                           <div className="flex items-center gap-2">
-                             <span className="text-[10px] font-black text-purple-400 bg-purple-500/10 px-2.5 py-0.5 rounded-lg border border-purple-500/20">
-                               {m.displayId || '#000'}
-                             </span>
-                             <span className="text-[9px] font-black uppercase tracking-wider text-neutral-400 bg-neutral-800 px-2 py-0.5 rounded-md">
-                               {m.section || m.mode || 'Battle Royale'}
-                             </span>
-                           </div>
-                           {m.status === 'completed' ? (
-                            <span className="bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full">
-                              Completed
-                            </span>
-                          ) : m.status === 'ongoing' ? (
-                            <span className="bg-amber-500/20 border border-amber-500/30 text-amber-400 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full animate-pulse">
-                              Live / Ongoing
-                            </span>
-                          ) : (
-                            <span className="bg-blue-500/20 border border-blue-500/30 text-blue-400 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full">
-                              Upcoming
-                            </span>
-                          )}
-                        </div>
-
-                        <h4 className="text-sm font-black italic pr-16 mb-3 text-white">{m.title}</h4>
-
-                        <div className="flex gap-4 mb-4">
-                          <div className="flex items-center gap-1.5 text-neutral-400">
-                            <Clock size={12} className="text-neutral-500" />
-                            <span className="text-[9px] font-black uppercase tracking-widest">{formatMatchTime(m.time)}</span>
+              {!selectedModeBucket ? (
+                <>
+                  {/* Mode Directory View (Separated by Game Mode so matches never mix together) */}
+                  <div className="space-y-4">
+                    {activeTab === AdminTab.MATCHES ? (
+                      <button
+                        type="button"
+                        onClick={() => onPageChange(Page.ADMIN_CREATE_MATCH)}
+                        className="w-full py-5 bg-purple-600 hover:bg-purple-500 rounded-2xl flex items-center justify-center gap-3 shadow-lg shadow-purple-600/30 active:scale-[0.98] transition-all text-white"
+                      >
+                        <Plus size={18} />
+                        <span className="text-xs font-black uppercase tracking-widest">
+                          {isFreeMatchRole ? 'Create Free Match' : 'Create New Match'}
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="p-4 rounded-2xl bg-purple-600/10 border border-purple-500/30 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-300 shrink-0">
+                            <Layers size={18} />
                           </div>
-                          <div className="flex items-center gap-1.5 text-neutral-400">
-                            <MapIcon size={12} className="text-neutral-500" />
-                            <span className="text-[9px] font-black uppercase tracking-widest">{m.map}</span>
+                          <div className="min-w-0">
+                            <h3 className="text-xs font-black uppercase tracking-wider text-white">
+                              All Modes — IDP & Result Control
+                            </h3>
+                            <p className="text-[10px] font-medium text-neutral-400 leading-snug mt-0.5">
+                              Tap any mode below to open only its matches, publish Room IDP, or declare results.
+                            </p>
                           </div>
                         </div>
+                      </div>
+                    )}
 
-                        <div className="flex items-center justify-between py-3 border-y border-neutral-800/80">
-                          <div>
-                            <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500 mb-0.5">Players Joined</p>
-                            <p className="text-xs font-black italic text-white">{m.playersCount}/{m.totalSlots || m.maxPlayers}</p>
-                          </div>
-                          <div>
-                            <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500 mb-0.5">Entry Fee</p>
-                            <p className="text-xs font-black text-emerald-400 italic leading-none">{m.entryFee === 0 ? 'FREE' : `₹${m.entryFee}`}</p>
-                          </div>
-                          <div>
-                            <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500 mb-0.5">Prize Pool</p>
-                            <p className="text-xs font-black text-amber-400 italic leading-none">{m.prizeType === 'perKill' ? `₹${m.perKillAmount}/kill` : `₹${m.prizePool}`}</p>
-                          </div>
-                        </div>
+                    <div className="relative">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500" size={16} />
+                      <input
+                        type="text"
+                        placeholder={
+                          activeTab === AdminTab.MATCHES
+                            ? 'Search Mode Name, Match ID or Title...'
+                            : 'Search Mode Name...'
+                        }
+                        value={activeTab === AdminTab.MATCHES ? searchTerm : modeSearchTerm}
+                        onChange={(e) =>
+                          activeTab === AdminTab.MATCHES
+                            ? setSearchTerm(e.target.value)
+                            : setModeSearchTerm(e.target.value)
+                        }
+                        className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl py-4 pl-12 pr-4 text-xs font-bold outline-none focus:border-purple-500 transition-all"
+                      />
+                    </div>
 
-                        {/* Room Credentials Banner */}
-                        <div className="mt-4 p-3.5 rounded-2xl border bg-black/60 flex flex-col gap-2.5">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <Key size={14} className={hasRoomCreds ? "text-emerald-400" : "text-amber-400"} />
-                              <span className="text-[10px] font-black uppercase tracking-widest text-neutral-300">Room Credentials</span>
+                    <div className="flex items-center justify-between px-1">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400">
+                        Select Mode ({modeBuckets.length})
+                      </p>
+                      <span className="text-[9px] font-bold text-neutral-500">
+                        {visibleMatches.length} {isFreeMatchRole ? 'Free Matches' : 'Total Matches'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* All App Modes Grid */}
+                  <div className="grid grid-cols-2 gap-3">
+                    {modeBuckets
+                      .filter((bucket) => {
+                        const q = (activeTab === AdminTab.MATCHES ? searchTerm : modeSearchTerm).trim().toLowerCase();
+                        if (!q) return true;
+                        return (
+                          bucket.title.toLowerCase().includes(q) ||
+                          bucket.subtitle.toLowerCase().includes(q) ||
+                          bucket.id.toLowerCase().includes(q) ||
+                          bucket.matches.some((m) =>
+                            `${m.displayId || ''} ${m.title || ''}`.toLowerCase().includes(q)
+                          )
+                        );
+                      })
+                      .map((bucket) => (
+                        <button
+                          type="button"
+                          key={bucket.id}
+                          onClick={() => {
+                            setMatchStatusFilter('all');
+                            setSearchTerm('');
+                            setSelectedModeId(bucket.id);
+                          }}
+                          className="text-left bg-neutral-900 hover:bg-neutral-800/90 border border-neutral-800 hover:border-purple-500/50 rounded-3xl overflow-hidden transition-all active:scale-[0.98] shadow-lg flex flex-col"
+                        >
+                          <div className="relative h-24 w-full bg-black overflow-hidden">
+                            <SafeImage
+                              src={bucket.image}
+                              fallbackSrc={resolveSafeModeImage('', bucket.title)}
+                              alt={bucket.title}
+                              className="w-full h-full"
+                              showLoader={false}
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-t from-neutral-900 via-black/30 to-transparent" />
+                            <div className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-black/75 border border-white/10 text-[9px] font-black text-white">
+                              {bucket.matches.length} {bucket.matches.length === 1 ? 'Match' : 'Matches'}
                             </div>
-                            {hasRoomCreds ? (
-                              <span className="text-[8px] font-black uppercase tracking-wider text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                                Declared & Live
-                              </span>
-                            ) : (
-                              <span className="text-[8px] font-black uppercase tracking-wider text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                                Pending
-                              </span>
+                            {bucket.needIdpCount > 0 && (
+                              <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-amber-500 text-black text-[8px] font-black uppercase tracking-wider shadow">
+                                {bucket.needIdpCount} Need IDP
+                              </div>
                             )}
                           </div>
 
-                          {hasRoomCreds ? (
-                            <div className="grid grid-cols-2 gap-2 bg-neutral-900/90 p-2.5 rounded-xl border border-neutral-800">
-                              <div className="flex items-center justify-between pr-1">
-                                <div>
-                                  <p className="text-[7px] font-black text-neutral-500 uppercase">Room ID</p>
-                                  <p className="text-xs font-black text-white font-mono">{displayRoomId}</p>
-                                </div>
-                                <button 
-                                  onClick={() => handleCopyCredential(displayRoomId, `room_${m.id}`)}
-                                  className="p-1 text-neutral-400 hover:text-white"
-                                  title="Copy Room ID"
-                                >
-                                  {copiedKey === `room_${m.id}` ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-                                </button>
-                              </div>
-                              <div className="flex items-center justify-between pr-1 border-l border-neutral-800 pl-2">
-                                <div>
-                                  <p className="text-[7px] font-black text-neutral-500 uppercase">Password</p>
-                                  <p className="text-xs font-black text-white font-mono">{displayRoomPass}</p>
-                                </div>
-                                <button 
-                                  onClick={() => handleCopyCredential(displayRoomPass, `pass_${m.id}`)}
-                                  className="p-1 text-neutral-400 hover:text-white"
-                                  title="Copy Password"
-                                >
-                                  {copiedKey === `pass_${m.id}` ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-                                </button>
-                              </div>
+                          <div className="p-3.5 flex-1 flex flex-col justify-between gap-2 w-full">
+                            <div>
+                              <h4 className="text-xs font-black italic uppercase text-white tracking-tight truncate">
+                                {bucket.title}
+                              </h4>
+                              <p className="text-[9px] font-bold uppercase tracking-wider text-neutral-500 truncate mt-0.5">
+                                {bucket.subtitle}
+                              </p>
                             </div>
-                          ) : (
-                            <p className="text-[9px] font-bold text-neutral-500 italic">
-                              Room ID & Password not declared yet. Only joined players will see saved credentials.
-                            </p>
-                          )}
 
-                          {/* Quick Inline Inputs */}
-                          <div className="flex items-center gap-2 pt-1">
-                            <input 
-                              type="text" 
-                              placeholder="Room ID"
-                              defaultValue={displayRoomId}
-                              id={`quick_room_${m.id}`}
-                              className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-[10px] font-bold text-white outline-none focus:border-purple-500 placeholder:text-neutral-600"
-                            />
-                            <input 
-                              type="text" 
-                              placeholder="Pass"
-                              defaultValue={displayRoomPass}
-                              id={`quick_pass_${m.id}`}
-                              className="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-3 py-2 text-[10px] font-bold text-white outline-none focus:border-purple-500 placeholder:text-neutral-600"
-                            />
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const idInput = document.getElementById(`quick_room_${m.id}`) as HTMLInputElement;
-                                const passInput = document.getElementById(`quick_pass_${m.id}`) as HTMLInputElement;
-                                const rId = idInput ? idInput.value.trim() : '';
-                                const rPass = passInput ? passInput.value.trim() : '';
-                                if (!rId && !rPass) {
-                                  alert('Please enter Room ID and Password first.');
-                                  return;
-                                }
-                                try {
-                                  const batch = writeBatch(db);
-                                  batch.set(doc(db, 'matchCredentials', m.id), {
-                                    matchId: m.id,
-                                    roomId: rId,
-                                    roomPassword: rPass,
-                                    updatedAt: serverTimestamp()
-                                  }, { merge: true });
-                                  const updates: any = {
-                                    hasRoomCredentials: Boolean(rId && rPass),
-                                    roomId: '',
-                                    roomPassword: '',
-                                    updatedAt: serverTimestamp()
-                                  };
-                                  if (rId && m.status === 'upcoming') {
-                                    updates.status = 'ongoing';
-                                  }
-                                  batch.update(doc(db, 'matches', m.id), updates);
-                                  await batch.commit();
-                                  invalidateFirestoreCache('admin_matches');
-                                  invalidateFirestoreCache('matches_list');
-                                  invalidateFirestoreCache('admin_matchCreds');
-                                  invalidateFirestoreCache(`matchCreds_${m.id}`);
-                                  setRefreshKey((k) => k + 1);
-                                  alert('Room credentials updated securely for joined players!');
-                                } catch (err: any) {
-                                  console.error('Quick save room failed:', err);
-                                  alert(err?.message || 'Failed to save Room ID & Password.');
-                                  handleFirestoreError(err, OperationType.UPDATE, `matchCredentials/${m.id}`);
-                                }
-                              }}
-                              className="p-2.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl border border-neutral-700 active:scale-95 transition-all"
-                              title="Save Credentials Quick"
-                            >
-                              <Save size={13} />
-                            </button>
+                            <div className="flex items-center justify-between pt-2 border-t border-neutral-800/80">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {bucket.liveCount > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[8px] font-black uppercase">
+                                    ⚡ {bucket.liveCount}
+                                  </span>
+                                )}
+                                {bucket.readyCount > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[8px] font-black uppercase">
+                                    🔑 {bucket.readyCount}
+                                  </span>
+                                )}
+                                {bucket.matches.length === 0 && (
+                                  <span className="text-[8px] font-bold uppercase text-neutral-600">
+                                    No matches
+                                  </span>
+                                )}
+                              </div>
+                              <ChevronRight size={14} className="text-purple-400 shrink-0" />
+                            </div>
                           </div>
+                        </button>
+                      ))}
+                  </div>
+
+                  {/* Quick Direct Match Results when searching by Match ID or Title inside Matches tab */}
+                  {activeTab === AdminTab.MATCHES && searchTerm.trim() !== '' && (
+                    <div className="space-y-3 pt-2">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-neutral-400 px-1">
+                        Matching Matches
+                      </p>
+                      {visibleMatches
+                        .filter((m) =>
+                          `${m.displayId || ''} ${m.title || ''} ${m.section || ''} ${m.map || ''}`
+                            .toLowerCase()
+                            .includes(searchTerm.toLowerCase())
+                        )
+                        .map((m) => renderMatchCard(m))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Selected Mode Matches View (Strictly this mode's matches only) */}
+                  <div className="space-y-4">
+                    <div className="p-4 bg-neutral-900 border border-neutral-800 rounded-3xl flex items-center justify-between gap-3 shadow-lg">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedModeId(null);
+                            setMatchStatusFilter('all');
+                          }}
+                          className="p-2.5 bg-black border border-neutral-800 rounded-xl text-neutral-400 hover:text-white active:scale-95 transition-all shrink-0"
+                          title="Back to All Modes"
+                        >
+                          <ArrowLeft size={16} />
+                        </button>
+                        <div className="w-11 h-11 rounded-xl overflow-hidden border border-white/10 shrink-0 bg-black">
+                          <SafeImage
+                            src={selectedModeBucket.image}
+                            fallbackSrc={resolveSafeModeImage('', selectedModeBucket.title)}
+                            alt={selectedModeBucket.title}
+                            className="w-full h-full"
+                            showLoader={false}
+                          />
                         </div>
-
-                        {/* Action Buttons: Declare Room Modal & Declare Result */}
-                        <div className="grid grid-cols-2 gap-2 mt-4">
-                          <button 
-                            type="button"
-                            onClick={() => handleOpenDeclareRoomModal(m)}
-                            className="py-3 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 text-purple-300 rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
-                          >
-                            <Key size={13} className="text-purple-400" />
-                            {hasRoomCreds ? 'Edit Room Info' : 'Declare Room'}
-                          </button>
-
-                          {m.status !== 'completed' ? (
-                            <button 
-                              type="button"
-                              onClick={() => handleDeclareResult(m)}
-                              className="py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-black uppercase tracking-wider shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
-                            >
-                              <Trophy size={13} />
-                              Declare Result
-                            </button>
-                          ) : (
-                            <div className="py-3 bg-neutral-800/60 border border-neutral-800 rounded-xl text-[10px] font-black uppercase tracking-wider text-neutral-500 text-center flex items-center justify-center gap-1.5">
-                              <CheckCheck size={13} className="text-emerald-500" />
-                              Result Declared
-                            </div>
-                          )}
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-black italic uppercase text-white truncate">
+                            {selectedModeBucket.title}
+                          </h3>
+                          <p className="text-[9px] font-black uppercase tracking-widest text-purple-400 truncate">
+                            {selectedModeBucket.matches.length}{' '}
+                            {selectedModeBucket.matches.length === 1 ? 'Match' : 'Matches'} • {selectedModeBucket.subtitle}
+                          </p>
                         </div>
                       </div>
-                    );
-                  })}
-              </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onPageChange(
+                            Page.ADMIN_CREATE_MATCH,
+                            `?modeId=${encodeURIComponent(selectedModeBucket.id)}`
+                          )
+                        }
+                        className="px-3.5 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-purple-600/20 active:scale-95 transition-all shrink-0"
+                      >
+                        <Plus size={13} />
+                        <span>New Match</span>
+                      </button>
+                    </div>
+
+                    <div className="relative">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-500" size={16} />
+                      <input
+                        type="text"
+                        placeholder={`Search inside ${selectedModeBucket.title} matches...`}
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl py-3.5 pl-12 pr-4 text-xs font-bold outline-none focus:border-purple-500 transition-all"
+                      />
+                    </div>
+
+                    {/* Scoped Status Filters for this Mode Only */}
+                    <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                      {[
+                        { id: 'all', label: `All (${selectedModeBucket.matches.length})` },
+                        { id: 'need_room', label: `⚠️ Need Room ID (${selectedModeBucket.needIdpCount})` },
+                        { id: 'room_ready', label: `🔑 Room Ready (${selectedModeBucket.readyCount})` },
+                        { id: 'live', label: `⚡ Live (${selectedModeBucket.liveCount})` },
+                        { id: 'completed', label: `🏆 Completed (${selectedModeBucket.completedCount})` },
+                      ].map((filterItem) => (
+                        <button
+                          type="button"
+                          key={filterItem.id}
+                          onClick={() => setMatchStatusFilter(filterItem.id as any)}
+                          className={`px-3.5 py-2 rounded-xl text-[9px] font-black uppercase tracking-wider whitespace-nowrap transition-all border ${
+                            matchStatusFilter === filterItem.id
+                              ? 'bg-purple-600/20 border-purple-500 text-purple-300 shadow-sm'
+                              : 'bg-neutral-900/80 border-neutral-800 text-neutral-500 hover:text-neutral-300'
+                          }`}
+                        >
+                          {filterItem.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const scopedMatches = selectedModeBucket.matches.filter((m) => {
+                      const matchText =
+                        (m.displayId || '') + ' ' + (m.title || '') + ' ' + (m.section || '') + ' ' + (m.map || '');
+                      const matchesSearch = matchText.toLowerCase().includes(searchTerm.toLowerCase());
+                      if (!matchesSearch) return false;
+
+                      const cred = matchCredentialsMap[m.id];
+                      const hasC = Boolean(
+                        (cred?.roomId && cred?.roomPassword) ||
+                          m.hasRoomCredentials ||
+                          (m.roomId && m.roomPassword)
+                      );
+
+                      if (matchStatusFilter === 'need_room') return !hasC && m.status !== 'completed';
+                      if (matchStatusFilter === 'room_ready') return hasC && m.status !== 'completed';
+                      if (matchStatusFilter === 'live') return m.status === 'ongoing';
+                      if (matchStatusFilter === 'completed') return m.status === 'completed';
+                      return true;
+                    });
+
+                    if (scopedMatches.length === 0) {
+                      return (
+                        <div className="p-8 bg-neutral-900/60 border border-neutral-800 rounded-3xl text-center space-y-3">
+                          <Gamepad2 size={32} className="mx-auto text-neutral-700" />
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-wider text-neutral-300">
+                              No matches in {selectedModeBucket.title}
+                            </p>
+                            <p className="text-[10px] font-medium text-neutral-500 mt-1">
+                              Create a match inside this mode to manage Room IDP and Results separately.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onPageChange(
+                                Page.ADMIN_CREATE_MATCH,
+                                `?modeId=${encodeURIComponent(selectedModeBucket.id)}`
+                              )
+                            }
+                            className="px-5 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest inline-flex items-center gap-2 active:scale-95 transition-all"
+                          >
+                            <Plus size={14} />
+                            <span>Create {selectedModeBucket.title} Match</span>
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    return <div className="space-y-4">{scopedMatches.map((m) => renderMatchCard(m))}</div>;
+                  })()}
+                </>
+              )}
             </motion.div>
           )}
 
@@ -3458,25 +4038,27 @@ export default function AdminPage({ onPageChange }: AdminPageProps) {
               className="w-full max-w-xs bg-neutral-900 rounded-[2.5rem] p-8 border border-neutral-800 shadow-2xl text-center"
             >
               <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 mx-auto mb-6">
-                <Trash2 size={32} />
+                <XCircle size={32} />
               </div>
-              <h3 className="text-lg font-black italic mb-2">Delete Match?</h3>
+              <h3 className="text-lg font-black italic mb-2">Cancel Match?</h3>
               <p className="text-[10px] font-black uppercase tracking-widest text-neutral-500 mb-8 leading-relaxed">
-                This will delete the match and refund all joined players automatically.
+                This will cancel &amp; remove the match and refund all joined players automatically.
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <button 
+                  type="button"
                   onClick={() => setIsDeleteConfirmOpen({ isOpen: false, matchId: '' })}
                   className="py-4 bg-neutral-800 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all"
                 >
-                  Cancel
+                  Keep Match
                 </button>
                 <button 
+                  type="button"
                   onClick={processDeleteMatch}
                   disabled={isProcessing}
                   className="py-4 bg-red-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all flex items-center justify-center gap-2"
                 >
-                  {isProcessing ? <Loader2 size={14} className="animate-spin" /> : 'Delete'}
+                  {isProcessing ? <Loader2 size={14} className="animate-spin" /> : 'Yes, Cancel'}
                 </button>
               </div>
             </motion.div>

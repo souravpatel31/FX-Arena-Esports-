@@ -1,15 +1,17 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { Routes, Route, useNavigate, useLocation, useNavigationType, Navigate } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
 import { Page, User } from './types';
+import { closeTopOpenModal } from './hooks/useModalBackHandler';
 import Header from './components/Header';
 import BottomNav from './components/BottomNav';
 import { auth, db, handleFirestoreError, setFirestoreHealth, getFirestoreHealth, OperationType } from './lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs, writeBatch, onSnapshot, increment, updateDoc, limit } from 'firebase/firestore';
 import { GAMES, GAME_MODES_DATA } from './constants';
-import { isAuthorizedAdmin, hasControlPanelAccess, STAFF_EMAILS } from './utils/adminAuth';
+import { isAuthorizedAdmin, hasControlPanelAccess, STAFF_EMAILS, FREE_MATCH_STAFF_EMAILS } from './utils/adminAuth';
 import { WELCOME_SPLASH_URL, resolveSafeModeImage } from './utils/assetUrl';
 import { isBlockedShareUrl } from './utils/shareLinks';
 
@@ -234,6 +236,7 @@ function ScrollToTop() {
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const navigationType = useNavigationType();
   const isNativeApk = Capacitor.isNativePlatform();
 
   const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(auth.currentUser));
@@ -245,6 +248,7 @@ export default function App() {
   });
   const [loading, setLoading] = useState(() => !auth.currentUser);
   const [joinedMatchIds, setJoinedMatchIds] = useState<string[]>([]);
+  const [exitToastVisible, setExitToastVisible] = useState(false);
 
   // Never block /download or web auth routes behind a 3s welcome splash
   const isPublicInstantPath = ['/download', '/login', '/signup'].includes(location.pathname);
@@ -257,16 +261,130 @@ export default function App() {
   const [splashRunId, setSplashRunId] = useState(1);
   const splashTimerRef = React.useRef<number | null>(null);
 
-  const dismissWelcomeSplash = () => {
+  const dismissWelcomeSplash = React.useCallback(() => {
     if (splashTimerRef.current) {
       window.clearTimeout(splashTimerRef.current);
       splashTimerRef.current = null;
     }
     setShowWelcomeSplash(false);
-  };
+  }, []);
 
   const pathnameRef = React.useRef(location.pathname);
   pathnameRef.current = location.pathname;
+  const isLoggedInRef = React.useRef(isLoggedIn);
+  isLoggedInRef.current = isLoggedIn;
+  const showWelcomeSplashRef = React.useRef(showWelcomeSplash);
+  showWelcomeSplashRef.current = showWelcomeSplash;
+  const dismissWelcomeSplashRef = React.useRef(dismissWelcomeSplash);
+  dismissWelcomeSplashRef.current = dismissWelcomeSplash;
+  const navigateRef = React.useRef(navigate);
+  navigateRef.current = navigate;
+  const routeHistoryRef = React.useRef<string[]>([location.pathname + location.search]);
+  const lastBackPressRef = React.useRef<number>(0);
+  const exitToastTimerRef = React.useRef<number | null>(null);
+
+  // Keep an accurate in-app navigation stack for Android hardware Back ("triangle") button
+  useEffect(() => {
+    const fullPath = location.pathname + location.search;
+    const stack = routeHistoryRef.current;
+
+    if (navigationType === 'PUSH') {
+      if (stack[stack.length - 1] !== fullPath) {
+        stack.push(fullPath);
+        if (stack.length > 30) stack.shift();
+      }
+    } else if (navigationType === 'REPLACE') {
+      if (stack.length > 0) {
+        stack[stack.length - 1] = fullPath;
+      } else {
+        stack.push(fullPath);
+      }
+    } else if (navigationType === 'POP') {
+      if (stack.length > 1 && stack[stack.length - 2] === fullPath) {
+        stack.pop();
+      } else if (stack[stack.length - 1] !== fullPath) {
+        const existingIdx = stack.lastIndexOf(fullPath);
+        if (existingIdx !== -1) {
+          routeHistoryRef.current = stack.slice(0, existingIdx + 1);
+        } else {
+          routeHistoryRef.current = [fullPath];
+        }
+      }
+    }
+  }, [location.pathname, location.search, navigationType]);
+
+  // Android Hardware / Navigation-bar Triangle Back Button handler (Capacitor APK)
+  useEffect(() => {
+    if (!isNativeApk) return;
+
+    let listenerHandle: { remove: () => Promise<void> } | null = null;
+    let disposed = false;
+
+    CapacitorApp.addListener('backButton', ({ canGoBack }) => {
+      // 1. Dismiss splash if still showing
+      if (showWelcomeSplashRef.current) {
+        dismissWelcomeSplashRef.current();
+        return;
+      }
+
+      // 2. Close any open modal/drawer first without navigating away
+      if (closeTopOpenModal()) {
+        return;
+      }
+
+      const currentPath = pathnameRef.current;
+      const loggedIn = isLoggedInRef.current;
+      const isRootRoute = loggedIn
+        ? currentPath === '/home' || currentPath === '/'
+        : currentPath === '/login' || currentPath === '/' || currentPath === '/download';
+
+      // 3. On any inner page: go back 1 page (or fall back to the Home/first page instead of exiting)
+      if (!isRootRoute) {
+        const hasPrevInApp = routeHistoryRef.current.length > 1;
+        const hasRouterIdx = typeof window.history.state?.idx === 'number' && window.history.state.idx > 0;
+        if (hasPrevInApp || hasRouterIdx || canGoBack) {
+          navigateRef.current(-1);
+        } else {
+          navigateRef.current(loggedIn ? '/home' : '/login', { replace: true });
+        }
+        return;
+      }
+
+      // 4. On the first page (/home or /login): never exit on a single accidental tap
+      const now = Date.now();
+      if (now - lastBackPressRef.current < 2000) {
+        setExitToastVisible(false);
+        void CapacitorApp.exitApp();
+      } else {
+        lastBackPressRef.current = now;
+        setExitToastVisible(true);
+        if (exitToastTimerRef.current) {
+          window.clearTimeout(exitToastTimerRef.current);
+        }
+        exitToastTimerRef.current = window.setTimeout(() => {
+          setExitToastVisible(false);
+          exitToastTimerRef.current = null;
+        }, 2000);
+      }
+    }).then((handle) => {
+      if (disposed) {
+        void handle.remove();
+      } else {
+        listenerHandle = handle;
+      }
+    }).catch(() => {});
+
+    return () => {
+      disposed = true;
+      if (listenerHandle) {
+        void listenerHandle.remove();
+      }
+      if (exitToastTimerRef.current) {
+        window.clearTimeout(exitToastTimerRef.current);
+        exitToastTimerRef.current = null;
+      }
+    };
+  }, [isNativeApk]);
 
   // Preserve ?ref=... across navigation and initial boot
   useEffect(() => {
@@ -482,6 +600,21 @@ export default function App() {
           }
         }
 
+        for (const freeEmail of FREE_MATCH_STAFF_EMAILS) {
+          try {
+            const freeUsersSnap = await getDocs(query(collection(db, 'users'), where('email', '==', freeEmail)));
+            for (const uDoc of freeUsersSnap.docs) {
+              await setDoc(doc(db, 'freeMatchStaff', uDoc.id), {
+                email: freeEmail,
+                role: 'free_match_staff',
+                updatedAt: serverTimestamp()
+              }, { merge: true });
+            }
+          } catch {
+            // Free match staff doc sync skipped when offline/quota-limited
+          }
+        }
+
         try {
           localStorage.setItem(SEED_FLAG, '1');
         } catch {
@@ -686,7 +819,7 @@ export default function App() {
       else if (page === Page.MATCH_DETAILS) path = `${path}/${id}`;
       else if (page === Page.ADMIN_USER_PROFILE) path = `${path}/${id}`;
       else if (page === Page.ADMIN_EDIT_MATCH) path = `${path}/${id}`;
-      else if (page === Page.ADMIN_CREATE_MATCH) path = `${path}/${id}`;
+      else if (page === Page.ADMIN_CREATE_MATCH) path = id.startsWith('?') ? `${path}${id}` : `${path}/${id}`;
       else if (page === Page.GAME_MODES) path = `${path}/${id}`;
     }
     navigate(path);
@@ -1036,6 +1169,18 @@ export default function App() {
     <>
       {renderMainContent()}
       {renderWelcomeSplash()}
+      <AnimatePresence>
+        {exitToastVisible && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[180] px-4 py-2.5 rounded-2xl bg-neutral-900/95 border border-white/10 text-white text-[11px] font-bold tracking-wide shadow-2xl whitespace-nowrap pointer-events-none"
+          >
+            Press back again to exit
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }

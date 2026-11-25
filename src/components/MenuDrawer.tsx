@@ -17,6 +17,7 @@ import {
   Bell
 } from 'lucide-react';
 import { Page, User as UserType } from '../types';
+import { useModalBackHandler } from '../hooks/useModalBackHandler';
 
 interface MenuDrawerProps {
   isOpen: boolean;
@@ -37,6 +38,7 @@ export default function MenuDrawer({
   onOpenSupport,
   onOpenNotifications
 }: MenuDrawerProps) {
+  useModalBackHandler(isOpen, onClose);
   const menuItems = [
     {
       id: 'profile',

@@ -4,6 +4,7 @@ import { X, Shield, Star, Sword, Target, Loader2 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc } from 'firebase/firestore';
 import { cachedGetDoc } from '../utils/firestoreCache';
+import { useModalBackHandler } from '../hooks/useModalBackHandler';
 
 interface RulesModalProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ interface RulesModalProps {
 }
 
 export default function RulesModal({ isOpen, onClose, section, onJoin, isJoined }: RulesModalProps) {
+  useModalBackHandler(isOpen, onClose);
   const [agreed, setAgreed] = useState(false);
   const [rules, setRules] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
